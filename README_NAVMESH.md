@@ -99,8 +99,14 @@ Call `NavMeshBaker.Bake(terrainRoot)` after modifying the terrain to rebuild the
 /// <summary>
 /// Bakes NavMesh for the specified root GameObject.
 /// Call this from your terrain generator after generation completes.
+/// Uses default settings: collectObjects = Children, no layer filtering.
 /// </summary>
 public static void Bake(GameObject root)
+
+/// <summary>
+/// Bakes NavMesh for the specified root GameObject with custom settings.
+/// </summary>
+public static void Bake(GameObject root, NavMeshCollectObjects collectObjects, bool useLayers, LayerMask layerMask)
 ```
 
 #### Instance Methods
@@ -110,6 +116,15 @@ public static void Bake(GameObject root)
 /// Bakes NavMesh for the specified root GameObject using instance settings.
 /// </summary>
 public void BakeFor(GameObject root)
+```
+
+#### Properties
+
+```csharp
+/// <summary>
+/// Gets the current instance of NavMeshBaker, if one exists.
+/// </summary>
+public static NavMeshBaker Instance { get; }
 ```
 
 ## License

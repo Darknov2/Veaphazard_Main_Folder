@@ -6,6 +6,8 @@ using UnityEngine.AI;
 /// Runtime NavMesh baker for procedural terrain.
 /// Automatically bakes NavMesh surfaces after procedural terrain generation completes.
 /// Can be used with auto-bake enabled, or called explicitly via NavMeshBaker.Bake(GameObject root).
+/// 
+/// Requires Unity's NavMeshComponents package to be installed.
 /// </summary>
 public class NavMeshBaker : MonoBehaviour
 {
@@ -34,9 +36,27 @@ public class NavMeshBaker : MonoBehaviour
 
     private static NavMeshBaker instance;
 
+    /// <summary>
+    /// Gets the current instance of NavMeshBaker, if one exists.
+    /// </summary>
+    public static NavMeshBaker Instance => instance;
+
     private void Awake()
     {
+        if (instance != null && instance != this)
+        {
+            Debug.LogWarning("[NavMeshBaker] Multiple NavMeshBaker instances detected. Using the first one.");
+            return;
+        }
         instance = this;
+    }
+
+    private void OnDestroy()
+    {
+        if (instance == this)
+        {
+            instance = null;
+        }
     }
 
     private void Start()
@@ -93,6 +113,7 @@ public class NavMeshBaker : MonoBehaviour
     /// <summary>
     /// Bakes the NavMesh for the specified root GameObject.
     /// Adds or retrieves a NavMeshSurface component and builds the navmesh.
+    /// Uses the instance configuration settings for collectObjects and layerMask.
     /// </summary>
     /// <param name="root">The root GameObject containing the terrain meshes.</param>
     public void BakeFor(GameObject root)
@@ -103,18 +124,44 @@ public class NavMeshBaker : MonoBehaviour
             return;
         }
 
-        // Check if NavMeshSurface type is available
-        if (!IsNavMeshSurfaceAvailable())
+        BakeInternal(root, collectObjects, useLayers, layerMask);
+    }
+
+    /// <summary>
+    /// Static method to bake NavMesh for a given root GameObject.
+    /// Can be called from the procedural terrain generator after generation completes.
+    /// Uses default settings: collectObjects = Children, no layer filtering.
+    /// </summary>
+    /// <param name="root">The root GameObject containing the terrain meshes.</param>
+    public static void Bake(GameObject root)
+    {
+        Bake(root, NavMeshCollectObjects.Children, false, ~0);
+    }
+
+    /// <summary>
+    /// Static method to bake NavMesh for a given root GameObject with custom settings.
+    /// Can be called from the procedural terrain generator after generation completes.
+    /// </summary>
+    /// <param name="root">The root GameObject containing the terrain meshes.</param>
+    /// <param name="collectObjects">Specifies which objects to collect for baking.</param>
+    /// <param name="useLayers">If true, uses the layer mask to filter objects.</param>
+    /// <param name="layerMask">Layer mask for filtering objects when useLayers is true.</param>
+    public static void Bake(GameObject root, NavMeshCollectObjects collectObjects, bool useLayers, LayerMask layerMask)
+    {
+        if (root == null)
         {
-            Debug.LogWarning("[NavMeshBaker] NavMeshSurface component not available. " +
-                "Please install Unity's NavMeshComponents package:\n" +
-                "1. Open Package Manager (Window > Package Manager)\n" +
-                "2. Click '+' and select 'Add package from git URL'\n" +
-                "3. Enter: https://github.com/Unity-Technologies/NavMeshComponents.git\n" +
-                "Or clone the repository from https://github.com/Unity-Technologies/NavMeshComponents into your Assets folder.");
+            Debug.LogWarning("[NavMeshBaker] Cannot bake NavMesh: root GameObject is null.");
             return;
         }
 
+        BakeInternal(root, collectObjects, useLayers, layerMask);
+    }
+
+    /// <summary>
+    /// Internal shared baking logic used by both instance and static methods.
+    /// </summary>
+    private static void BakeInternal(GameObject root, NavMeshCollectObjects collectObjects, bool useLayers, LayerMask layerMask)
+    {
         // Get or add NavMeshSurface component
         NavMeshSurface surface = root.GetComponent<NavMeshSurface>();
         if (surface == null)
@@ -134,64 +181,5 @@ public class NavMeshBaker : MonoBehaviour
         surface.BuildNavMesh();
 
         Debug.Log("[NavMeshBaker] NavMesh baked successfully for: " + root.name);
-    }
-
-    /// <summary>
-    /// Static method to bake NavMesh for a given root GameObject.
-    /// Can be called from the procedural terrain generator after generation completes.
-    /// </summary>
-    /// <param name="root">The root GameObject containing the terrain meshes.</param>
-    public static void Bake(GameObject root)
-    {
-        if (root == null)
-        {
-            Debug.LogWarning("[NavMeshBaker] Cannot bake NavMesh: root GameObject is null.");
-            return;
-        }
-
-        // Check if NavMeshSurface type is available
-        if (!IsNavMeshSurfaceAvailable())
-        {
-            Debug.LogWarning("[NavMeshBaker] NavMeshSurface component not available. " +
-                "Please install Unity's NavMeshComponents package:\n" +
-                "1. Open Package Manager (Window > Package Manager)\n" +
-                "2. Click '+' and select 'Add package from git URL'\n" +
-                "3. Enter: https://github.com/Unity-Technologies/NavMeshComponents.git\n" +
-                "Or clone the repository from https://github.com/Unity-Technologies/NavMeshComponents into your Assets folder.");
-            return;
-        }
-
-        // Get or add NavMeshSurface component
-        NavMeshSurface surface = root.GetComponent<NavMeshSurface>();
-        if (surface == null)
-        {
-            surface = root.AddComponent<NavMeshSurface>();
-            surface.collectObjects = NavMeshCollectObjects.Children;
-        }
-
-        // Build the NavMesh
-        surface.BuildNavMesh();
-
-        Debug.Log("[NavMeshBaker] NavMesh baked successfully for: " + root.name);
-    }
-
-    /// <summary>
-    /// Checks if the NavMeshSurface type is available in the project.
-    /// </summary>
-    /// <returns>True if NavMeshSurface is available, false otherwise.</returns>
-    private static bool IsNavMeshSurfaceAvailable()
-    {
-        // NavMeshSurface is part of UnityEngine.AI namespace when NavMeshComponents is installed
-        // We check by trying to access the type - if it compiles, it's available
-        // This method exists primarily for documentation; if the script compiles, NavMeshSurface is available
-        try
-        {
-            var type = typeof(NavMeshSurface);
-            return type != null;
-        }
-        catch
-        {
-            return false;
-        }
     }
 }
