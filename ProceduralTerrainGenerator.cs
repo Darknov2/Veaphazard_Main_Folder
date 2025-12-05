@@ -3,25 +3,26 @@ using System.Collections;
 using System.Collections.Generic;
 using System;
 using System.Linq;
+using Unity.AI.Navigation;
+using UnityEngine.AI;
 
-/// <summary>
 /// Revised streaming generator with prioritized, player-centered loading:
 /// - Surface band chunks are prioritized and generated first.
 /// - When player is moving downward, chunks below the player are generated top->down
 ///   so caves/surface transitions appear progressively and avoid visible pop-in below.
 /// - Work is throttled per-frame (maxLoadsPerFrame) to avoid stalls while still making
 ///   the closest / most important chunks appear quickly.
-/// - This implementation focuses on ordering/priority and avoids radically changing chunk
-///   generation internals so it integrates with your existing TerrainChunk.Generate() API.
+/// - Ensures all chunks are assigned to the "Terrain" layer so NavMeshSurface can collect PhysicsColliders.
+/// - Triggers a scoped NavMesh update per chunk right after the chunk mesh/collider is generated.
 /// 
 /// Tuning knobs (inspect the public fields below):
-/// - maxLoadsPerFrame: how many new chunks may be created/generated per frame (increase for more instant loading, decrease for smoother frames)
+/// - maxLoadsPerFrame: how many new chunks may be created/generated per frame
 /// - immediateRadiusChunks: chunks within this chunk-distance from the camera are treated as immediate high-priority candidates
 /// - surfaceBandMargin: world units around surfaceBaseHeight that define the "surface band" (higher priority)
 /// - preferDownWeight: when the camera is moving down, this weight biases lower chunks to be generated from top -> bottom
-/// </summary>
 public class ProceduralTerrainGenerator : MonoBehaviour
 {
+    [Header("Config + Materials")]
     public ProceduralTerrainConfig config;
     public Material terrainMaterial;
 
@@ -34,16 +35,25 @@ public class ProceduralTerrainGenerator : MonoBehaviour
 
     [Header("Streaming Behavior Tuning")]
     [Tooltip("Maximum number of chunk loads (Create + Generate) allowed per frame.")]
-    public int maxLoadsPerFrame = 3; // tweak for performance vs immediacy
+    public int maxLoadsPerFrame = 3;
     [Tooltip("If camera chunk-distance is <= this, mark chunk as immediate/high-priority.")]
     public int immediateRadiusChunks = 1;
     [Tooltip("World units around surfaceBaseHeight considered the surface band (highest priority).")]
     public float surfaceBandMargin = 1.0f;
     [Tooltip("Bias weight applied to prioritize lower chunks when player is moving down. Higher = stronger top->down priority.")]
     public float preferDownWeight = 4f;
-    [Tooltip("If true, generate nearest chunks around the camera first (good for VR / visible area).")]
+    [Tooltip("If true, generate nearest chunks around the camera first.")]
     public bool preferCameraProximity = true;
 
+    [Header("NavMesh Integration")]
+    [Tooltip("Optional: Assign a NavMeshSurface to build/update when chunks are generated.")]
+    public NavMeshSurface navMeshSurface;
+    [Tooltip("Layers included for NavMesh collection. Should include only your Terrain layer.")]
+    public LayerMask navmeshCollectLayers;
+    [Tooltip("Extra padding added around the chunk bounds for local NavMesh updates.")]
+    public float navmeshBoundsPadding = 0.5f;
+
+    // Internal state
     private float nextStreamTime;
     private DensitySampler sampler;
     private readonly Dictionary<Vector3Int, TerrainChunk> chunks = new();
@@ -61,11 +71,40 @@ public class ProceduralTerrainGenerator : MonoBehaviour
 
     private float lowestLoadedWorldY = float.PositiveInfinity;
 
+    // Cached Terrain layer index
+    private int terrainLayer = -1;
+
+    private void Awake()
+    {
+        // Cache Terrain layer
+        terrainLayer = LayerMask.NameToLayer("Terrain");
+        if (terrainLayer < 0)
+        {
+            Debug.LogWarning("Layer 'Terrain' not found. Create it in Project Settings > Tags and Layers.");
+        }
+
+        // If a NavMeshSurface is assigned, ensure its layer mask matches the intended layers
+        if (navMeshSurface != null)
+        {
+            if (navmeshCollectLayers == 0)
+            {
+                // Default to the surface's layerMask if provided; otherwise, try Terrain layer
+                navmeshCollectLayers = navMeshSurface.layerMask != 0
+                    ? navMeshSurface.layerMask
+                    : (terrainLayer >= 0 ? (LayerMask)(1 << terrainLayer) : ~0);
+            }
+            else
+            {
+                navMeshSurface.layerMask = navmeshCollectLayers;
+            }
+        }
+    }
+
     private void Start()
     {
         if (config == null)
         {
-            Debug.LogError("No config assigned.");
+            Debug.LogError("No ProceduralTerrainConfig assigned.");
             return;
         }
         if (target == null && Camera.main != null)
@@ -91,6 +130,12 @@ public class ProceduralTerrainGenerator : MonoBehaviour
         }
         yield return null;
         MarkInitialReadyOnce();
+
+        // Optional: build whole NavMesh initially
+        if (navMeshSurface != null)
+        {
+            navMeshSurface.BuildNavMesh();
+        }
     }
 
     public void GenerateAll()
@@ -151,7 +196,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             pendingList.Remove(c);
         }
 
-        // Determine movement direction (used to bias priority)
+        // Determine movement direction
         float verticalDelta = 0f;
         if (!firstUpdate)
         {
@@ -161,7 +206,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
         lastTargetY = target.position.y;
         bool movingDown = verticalDelta < -0.01f;
 
-        // Enqueue newly desired chunks for prioritized loading (don't generate here directly)
+        // Enqueue newly desired chunks
         foreach (var c in desired)
         {
             if (chunks.ContainsKey(c)) continue;
@@ -169,21 +214,19 @@ public class ProceduralTerrainGenerator : MonoBehaviour
                 pendingList.Add(c);
         }
 
-        // Process pending candidate list with priority ordering and a per-frame cap
         if (pendingList.Count == 0) return;
 
-        // Build score list (smaller = higher priority)
+        // Build priority score list
         Vector3 camPos = target.position;
         float surfaceY = config.surfaceBaseHeight;
 
-        // Compose a list of (chunk,score) and sort ascending by score
         var scored = new List<(Vector3Int c, float score)>(pendingList.Count);
         foreach (var c in pendingList)
         {
             // chunk world center Y
             float chunkCenterY = (c.y * config.chunkSizeY + config.chunkSizeY * 0.5f) * config.voxelScale + config.worldOffset.y;
 
-            // surface band flag: chunk intersects surfaceBaseHeight within margin
+            // surface band flag
             float chunkTopY = (c.y * config.chunkSizeY + config.chunkSizeY) * config.voxelScale + config.worldOffset.y;
             float chunkBottomY = (c.y * config.chunkSizeY) * config.voxelScale + config.worldOffset.y;
             bool isSurfaceBand = (surfaceY + surfaceBandMargin >= chunkBottomY) && (surfaceY - surfaceBandMargin <= chunkTopY);
@@ -193,7 +236,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             float chunkCenterZ = (c.z * config.chunkSizeXZ + config.chunkSizeXZ * 0.5f) * config.voxelScale + config.worldOffset.z;
             float horizDist = Vector2.SqrMagnitude(new Vector2(chunkCenterX - camPos.x, chunkCenterZ - camPos.z));
 
-            // immediate boost for very near chunks
+            // immediate boost
             int camChunkX = Mathf.FloorToInt((camPos.x - config.worldOffset.x) / (config.chunkSizeXZ * config.voxelScale));
             int camChunkY = Mathf.FloorToInt((camPos.y - config.worldOffset.y) / (config.chunkSizeY * config.voxelScale));
             int camChunkZ = Mathf.FloorToInt((camPos.z - config.worldOffset.z) / (config.chunkSizeXZ * config.voxelScale));
@@ -202,68 +245,61 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             int dz = Mathf.Abs(c.z - camChunkZ);
             int chunkManhattan = dx + dy + dz;
 
-            float score = horizDist; // base: prefer horizontally close chunks
+            float score = horizDist; // base: prefer horizontally close
 
             if (isSurfaceBand)
             {
-                score *= 0.01f;               // strongly prefer surface band chunks (very high priority)
-                score -= 10000f;             // ensure surface band sorts before others
+                score *= 0.01f;
+                score -= 10000f;
             }
 
-            // Prefer camera proximity (optionally)
             if (preferCameraProximity)
             {
                 score += (float)chunkManhattan * 10f;
             }
 
-            // Bias for moving down: for chunks below camera, prefer higher chunks first.
             if (movingDown)
             {
                 if (chunkCenterY <= camPos.y)
                 {
-                    // smaller (camY - chunkCenterY) -> higher priority; apply weight
                     score += (camPos.y - chunkCenterY) / preferDownWeight;
                 }
                 else
                 {
-                    // above camera: deprioritize slightly
                     score += (chunkCenterY - camPos.y) * 0.5f;
                 }
             }
             else
             {
-                // normal bias: prefer chunks near camera Y
                 score += Mathf.Abs(chunkCenterY - camPos.y) * 0.5f;
             }
 
-            // boost very-near immediate chunks hugely so they are picked first
             if (dx <= immediateRadiusChunks && dy <= immediateRadiusChunks && dz <= immediateRadiusChunks)
                 score -= 5000f;
 
             scored.Add((c, score));
         }
 
-        // sort ascending by score
+        // sort ascending by score and process up to maxLoadsPerFrame
         scored.Sort((a, b) => a.score.CompareTo(b.score));
 
-        // process up to maxLoadsPerFrame entries
         int loads = 0;
         var processedThisFrame = new List<Vector3Int>(Mathf.Min(maxLoadsPerFrame, scored.Count));
         for (int i = 0; i < scored.Count && loads < maxLoadsPerFrame; i++)
         {
             var cell = scored[i].c;
-            // create chunk and generate
-            // double-check it wasn't created in the meantime
             if (chunks.ContainsKey(cell)) { pendingSet.Remove(cell); processedThisFrame.Add(cell); continue; }
 
             var chunk = CreateChunkGO(cell);
             chunks.Add(cell, chunk);
 
-            // generation: prefer async coroutine if configured (avoids blocking), but respects the original API
             if (config.asyncGeneration)
                 StartCoroutine(GenerateChunkAsync(chunk));
             else
+            {
                 chunk.Generate();
+                TryUpdateNavMeshForChunk(chunk);
+            }
 
             float worldY = chunk.transform.position.y;
             if (worldY < lowestLoadedWorldY)
@@ -276,14 +312,9 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             processedThisFrame.Add(cell);
         }
 
-        // Remove processed from pendingList and pendingSet
         if (processedThisFrame.Count > 0)
         {
-            foreach (var p in processedThisFrame)
-            {
-                pendingSet.Remove(p);
-            }
-            // rebuild pendingList from pendingSet (cheap; size typically small)
+            foreach (var p in processedThisFrame) pendingSet.Remove(p);
             pendingList.Clear();
             pendingList.AddRange(pendingSet);
         }
@@ -316,8 +347,9 @@ public class ProceduralTerrainGenerator : MonoBehaviour
 
     private IEnumerator GenerateChunkAsync(TerrainChunk chunk)
     {
-        // Keep same behavior as previous: call Generate and yield once so we don't block longer than a frame
         chunk.Generate();
+        // After mesh/collider ready, update local navmesh area for this chunk
+        TryUpdateNavMeshForChunk(chunk);
         yield return null;
     }
 
@@ -325,11 +357,23 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     {
         GameObject go = new($"Chunk_{coord.x}_{coord.y}_{coord.z}");
         go.transform.SetParent(transform, false);
+
+        // Assign Terrain layer recursively so MeshCollider and children are on the Terrain layer
+        if (terrainLayer >= 0) SetLayerRecursively(go, terrainLayer);
+
         var chunk = go.AddComponent<TerrainChunk>();
         var mr = go.GetComponent<MeshRenderer>();
         mr.sharedMaterial = terrainMaterial;
+
         chunk.Initialize(config, sampler, coord, DensitySampler.DensityGates.AllOn);
         return chunk;
+    }
+
+    private void SetLayerRecursively(GameObject obj, int layer)
+    {
+        obj.layer = layer;
+        for (int i = 0; i < obj.transform.childCount; i++)
+            SetLayerRecursively(obj.transform.GetChild(i).gameObject, layer);
     }
 
     private void GenerateImmediate()
@@ -342,6 +386,8 @@ public class ProceduralTerrainGenerator : MonoBehaviour
                     var chunk = CreateChunkGO(c);
                     chunks.Add(c, chunk);
                     chunk.Generate();
+                    TryUpdateNavMeshForChunk(chunk);
+
                     float worldY = chunk.transform.position.y;
                     if (worldY < lowestLoadedWorldY)
                     {
@@ -404,7 +450,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
 
     /// <summary>
     /// Called by TerrainModificationManager to rebuild a loaded chunk after an edit.
-    /// This keeps the old API; rebuild requests still generate the chunk immediately if loaded.
+    /// This keeps the old API and also refreshes local NavMesh around the chunk.
     /// </summary>
     public void EnqueueChunkRebuild(Vector3Int coord)
     {
@@ -413,7 +459,49 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             if (config.asyncGeneration)
                 StartCoroutine(GenerateChunkAsync(chunk));
             else
+            {
                 chunk.Generate();
+                TryUpdateNavMeshForChunk(chunk);
+            }
         }
+    }
+
+    /// <summary>
+    /// Compute chunk bounds and update NavMesh locally using PhysicsColliders.
+    /// Avoids RenderMeshes collection to skip empty meshes.
+    /// </summary>
+    private void TryUpdateNavMeshForChunk(TerrainChunk chunk)
+    {
+        if (navMeshSurface == null) return;
+
+        // Compute world-space bounds of this chunk
+        Vector3 size = new Vector3(
+            config.chunkSizeXZ * config.voxelScale,
+            config.chunkSizeY  * config.voxelScale,
+            config.chunkSizeXZ * config.voxelScale
+        );
+        Bounds bounds = new Bounds(chunk.transform.position + size * 0.5f, size);
+        bounds.Expand(navmeshBoundsPadding * 2f);
+
+        // Collect sources using PhysicsColliders on the selected layers
+        var sources = new List<NavMeshBuildSource>();
+        NavMeshBuilder.CollectSources(
+            bounds,
+            navMeshSurface.layerMask,                      // ensure this includes only Terrain
+            NavMeshCollectGeometry.PhysicsColliders,       // prefer colliders over render meshes
+            navMeshSurface.defaultArea,
+            new List<NavMeshBuildMarkup>(),
+            sources
+        );
+
+        var settings = navMeshSurface.GetBuildSettings();
+
+        // Update only this area asynchronously
+        NavMeshBuilder.UpdateNavMeshDataAsync(
+            navMeshSurface.navMeshData,
+            settings,
+            sources,
+            bounds
+        );
     }
 }
