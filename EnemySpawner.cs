@@ -80,6 +80,8 @@ public class EnemySpawner : MonoBehaviour
     public int navMeshAreaMask = NavMesh.AllAreas;
     [Tooltip("If true, log a warning when an agent can't be placed on the NavMesh.")]
     public bool warnWhenAgentNotOnNavMesh = true;
+    [Tooltip("If true, snap spawn positions to the NavMesh during placement. When false, only raycast ground detection is used.")]
+    public bool snapSpawnPositionToNavMesh = true;
 
     [Header("Sampling")]
     [Tooltip("Tries this many positions per enemy before giving up.")]
@@ -213,20 +215,31 @@ public class EnemySpawner : MonoBehaviour
             Debug.Log("[EnemySpawner] Built NavMesh on terrain root.");
         }
 #else
-        // For older Unity versions, try to find NavMeshSurface via reflection or log a message
-        var surfaceType = System.Type.GetType("Unity.AI.Navigation.NavMeshSurface, Unity.AI.Navigation");
-        if (surfaceType != null)
+        // For older Unity versions, try to find NavMeshSurface via reflection
+        try
         {
-            var surface = terrainRoot.GetComponent(surfaceType);
-            if (surface != null)
+            var surfaceType = System.Type.GetType("Unity.AI.Navigation.NavMeshSurface, Unity.AI.Navigation");
+            if (surfaceType != null)
             {
-                var buildMethod = surfaceType.GetMethod("BuildNavMesh");
-                if (buildMethod != null)
+                var surface = terrainRoot.GetComponent(surfaceType);
+                if (surface != null)
                 {
-                    buildMethod.Invoke(surface, null);
-                    Debug.Log("[EnemySpawner] Built NavMesh on terrain root.");
+                    var buildMethod = surfaceType.GetMethod("BuildNavMesh");
+                    if (buildMethod != null)
+                    {
+                        buildMethod.Invoke(surface, null);
+                        Debug.Log("[EnemySpawner] Built NavMesh on terrain root.");
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[EnemySpawner] NavMeshSurface found but BuildNavMesh method not found via reflection.");
+                    }
                 }
             }
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning($"[EnemySpawner] Failed to build NavMesh via reflection: {ex.Message}");
         }
 #endif
     }
@@ -271,6 +284,8 @@ public class EnemySpawner : MonoBehaviour
     private IEnumerator WaitForNavMeshRoutine()
     {
         float startTime = Time.time;
+        float checkInterval = 0.25f; // Check every 0.25 seconds instead of every frame
+        var waitInterval = new WaitForSeconds(checkInterval);
         
         while (!IsNavMeshReady())
         {
@@ -279,7 +294,7 @@ public class EnemySpawner : MonoBehaviour
                 Debug.LogWarning($"[EnemySpawner] NavMesh wait timeout ({navMeshWaitTimeout}s) reached. Proceeding with spawn attempt.");
                 yield break;
             }
-            yield return null;
+            yield return waitInterval;
         }
         
         Debug.Log("[EnemySpawner] NavMesh is ready. Proceeding with spawning.");
@@ -287,9 +302,18 @@ public class EnemySpawner : MonoBehaviour
 
     /// <summary>
     /// Checks if NavMesh triangulation is available (at least one vertex exists).
+    /// Uses a less expensive check via NavMesh.SamplePosition when possible.
     /// </summary>
     private bool IsNavMeshReady()
     {
+        // First try a cheaper check using SamplePosition at world origin
+        // If this succeeds, we know some navmesh exists
+        if (NavMesh.SamplePosition(Vector3.zero, out NavMeshHit _, 1000f, navMeshAreaMask))
+        {
+            return true;
+        }
+        
+        // Fallback to the more expensive CalculateTriangulation check
         var triangulation = NavMesh.CalculateTriangulation();
         return triangulation.vertices != null && triangulation.vertices.Length > 0;
     }
@@ -408,12 +432,28 @@ public class EnemySpawner : MonoBehaviour
         var agent = instance.GetComponent<NavMeshAgent>();
         if (agent == null) return;
         
+        // Check if the agent is enabled before attempting to warp
+        if (!agent.enabled)
+        {
+            if (warnWhenAgentNotOnNavMesh)
+            {
+                Debug.LogWarning($"[EnemySpawner] NavMeshAgent on '{instance.name}' is disabled. Cannot warp to NavMesh.");
+            }
+            return;
+        }
+        
         Vector3 pos = instance.transform.position;
         
         if (NavMesh.SamplePosition(pos, out NavMeshHit hit, navMeshSampleMaxDistance, navMeshAreaMask))
         {
-            // Warp the agent to the valid NavMesh position
-            agent.Warp(hit.position);
+            // Move the transform first to ensure agent can be warped properly
+            instance.transform.position = hit.position;
+            
+            // Then warp the agent to ensure it's properly placed on the NavMesh
+            if (agent.isActiveAndEnabled)
+            {
+                agent.Warp(hit.position);
+            }
         }
         else
         {
@@ -495,11 +535,13 @@ public class EnemySpawner : MonoBehaviour
 
                 Vector3 spawnPos = hit.point + hit.normal * Mathf.Max(0f, spawnYOffset);
 
-                // Optional NavMesh validation/snap (uses the class-level requireNavMeshBeforeSpawning flag for spawn-point validation)
-                // Note: This is separate from requireNavMeshBeforeSpawning which controls initial wait
-                if (NavMesh.SamplePosition(spawnPos, out NavMeshHit nmh, navMeshSampleMaxDistance, navMeshAreaMask))
+                // Optional NavMesh snap - controlled by snapSpawnPositionToNavMesh setting
+                if (snapSpawnPositionToNavMesh)
                 {
-                    spawnPos = nmh.position;
+                    if (NavMesh.SamplePosition(spawnPos, out NavMeshHit nmh, navMeshSampleMaxDistance, navMeshAreaMask))
+                    {
+                        spawnPos = nmh.position;
+                    }
                 }
 
                 // Orientation
