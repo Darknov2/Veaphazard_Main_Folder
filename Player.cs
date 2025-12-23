@@ -28,6 +28,12 @@ public class PlayerController : MonoBehaviour
     [Header("Build Mode")]
     public bool buildMode = false;
 
+    [Header("Throwing")]
+    public GameObject throwablePrefab;           // prefab to instantiate when throwing
+    public float throwForce = 12f;               // initial speed applied to thrown object
+    public float throwSpawnDistance = 1.0f;      // spawn offset in front of camera
+    public bool autoAddRigidbody = true;         // if spawned object has no Rigidbody, optionally add one
+
     // ---- Removed legacy terrain-edit fields and methods (use InputTerrainBrush instead) ----
 
     private CharacterController characterController;
@@ -49,7 +55,8 @@ public class PlayerController : MonoBehaviour
     {
         HandleMovement();
 
-    
+        if (Input.GetKeyDown(KeyCode.R))
+            ThrowItemFromCamera();
 
         HandleDestroyObject();
         TryPushObjects();
@@ -135,6 +142,65 @@ public class PlayerController : MonoBehaviour
             {
                 rb.AddForce(moveDirection * pushForce, ForceMode.VelocityChange);
             }
+        }
+    }
+
+    private void ThrowItemFromCamera()
+    {
+        // Check if throwablePrefab is assigned
+        if (throwablePrefab == null)
+        {
+            Debug.LogWarning("[PlayerController] throwablePrefab is not assigned. Cannot throw.");
+            return;
+        }
+
+        // Resolve camera transform (use cameraTransform field or Camera.main fallback)
+        Transform activeCamera = cameraTransform;
+        if (activeCamera == null && Camera.main != null)
+            activeCamera = Camera.main.transform;
+
+        Vector3 spawnPosition;
+        Vector3 throwDirection;
+
+        if (activeCamera != null)
+        {
+            // Use camera transform
+            spawnPosition = activeCamera.position + activeCamera.forward * throwSpawnDistance;
+            throwDirection = activeCamera.forward;
+        }
+        else
+        {
+            // Fallback to player forward and spawn slightly above player
+            spawnPosition = transform.position + transform.forward * throwSpawnDistance + Vector3.up * 1.5f;
+            throwDirection = transform.forward;
+        }
+
+        // Instantiate throwablePrefab at calculated position with identity rotation
+        GameObject thrownObject = Instantiate(throwablePrefab, spawnPosition, Quaternion.identity);
+
+        // Ensure the spawned object has a Rigidbody
+        Rigidbody rb = thrownObject.GetComponent<Rigidbody>();
+        if (rb == null && autoAddRigidbody)
+        {
+            rb = thrownObject.AddComponent<Rigidbody>();
+        }
+
+        // Compute launch velocity: camera forward * throwForce + player horizontal velocity
+        Vector3 launchVelocity = throwDirection.normalized * throwForce;
+        
+        // Add player's horizontal velocity (xz components)
+        Vector3 playerHorizontalVelocity = new Vector3(characterController.velocity.x, 0, characterController.velocity.z);
+        launchVelocity += playerHorizontalVelocity;
+
+        // Apply velocity to the Rigidbody
+        if (rb != null)
+        {
+            rb.velocity = launchVelocity;
+        }
+        else
+        {
+            // Safe fallback if no Rigidbody exists: move the transform once
+            thrownObject.transform.position += launchVelocity * Time.deltaTime;
         }
     }
 }
