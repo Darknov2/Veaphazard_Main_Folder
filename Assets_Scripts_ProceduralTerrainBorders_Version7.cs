@@ -1,3 +1,5 @@
+// No FindObjectOfType usages here; left unchanged except cleaning up if required.
+// Provided for completeness.
 using UnityEngine;
 
 /// <summary>

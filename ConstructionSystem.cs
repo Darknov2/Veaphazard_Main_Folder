@@ -1,8 +1,15 @@
+// (Updated) Construction / building system with per-prefab and per-instance snap sizes (independent X/Y/Z),
+// no extra components, and a configurable screen-space aim offset.
+//
+// Changes:
+// - Removed the B key toggle for build mode (buildMode must be controlled externally).
+// - Changed placement input to use right mouse button (Input.GetMouseButtonDown(1)) instead of left click.
 using UnityEngine;
 using System.Collections.Generic;
+using UnityEngine.Events;
 
 /// <summary>
-/// Construction / building system with per-prefab and per-instance snap sizes (independent X/Y/Z),
+/// building system with per-prefab and per-instance snap sizes (independent X/Y/Z),
 /// no extra components, and a configurable screen-space aim offset.
 /// </summary>
 public class ConstructionSystem : MonoBehaviour
@@ -37,7 +44,11 @@ public class ConstructionSystem : MonoBehaviour
     [Range(-0.5f, 0.5f)] public float aimYOffset = 0f;
 
     [Header("Mode")]
+    [Tooltip("When true, the ghost preview and placement are active. This must now be toggled by external code (e.g., BuildingIntegration).")]
     public bool buildMode = false;
+
+    // Event invoked after a successful placement. Provides the newly instantiated GameObject.
+    public UnityEvent<GameObject> onPlaced = new UnityEvent<GameObject>();
 
     private GameObject ghostObject;
     private List<Vector3> candidatePositions = new List<Vector3>();
@@ -66,13 +77,7 @@ public class ConstructionSystem : MonoBehaviour
 
     void Update()
     {
-        if (Input.GetKeyDown(KeyCode.B))
-        {
-            buildMode = !buildMode;
-            SetGhostActive(buildMode);
-            SyncBuildMode();
-        }
-
+        // NOTE: Removed B key toggle: buildMode must be controlled externally (e.g., via BuildingIntegration)
         if (!buildMode) return;
         if (buildPrefabs == null || buildPrefabs.Length == 0) return;
 
@@ -114,6 +119,20 @@ public class ConstructionSystem : MonoBehaviour
             selectedIndex = (selectedIndex + direction + buildPrefabs.Length) % buildPrefabs.Length;
             SpawnGhost();
         }
+    }
+
+    // Public setter so external systems can change selection and refresh the preview
+    public void SetSelectedIndex(int idx)
+    {
+        if (buildPrefabs == null || buildPrefabs.Length == 0) return;
+        selectedIndex = Mathf.Clamp(idx, 0, buildPrefabs.Length - 1);
+        SpawnGhost();
+    }
+
+    // Public helper to force recreation/refresh of the ghost preview
+    public void RefreshGhost()
+    {
+        SpawnGhost();
     }
 
     // Screen-space ray with configurable offset (centers preview more to the left if aimXOffset < 0)
@@ -198,7 +217,8 @@ public class ConstructionSystem : MonoBehaviour
         bool canPlace = !IsOccupied(placePosition, currentSize);
         SetGhostMaterial(ghostObject.transform, canPlace ? ghostGreenMaterial : ghostRedMaterial);
 
-        if (canPlace && Input.GetMouseButtonDown(0))
+        // Placement now uses right mouse button (1). Left mouse is no longer used for placement here.
+        if (canPlace && Input.GetMouseButtonDown(1))
         {
             var obj = Instantiate(buildPrefabs[selectedIndex], placePosition, rot);
 
@@ -206,6 +226,9 @@ public class ConstructionSystem : MonoBehaviour
             // Record this instance as a placed object with its per-instance snap size
             placedRoots.Add(obj);
             placedSnapSizeXYZ[obj] = currentSize;
+
+            // notify listeners (e.g., to consume inventory item)
+            onPlaced?.Invoke(obj);
         }
     }
 
