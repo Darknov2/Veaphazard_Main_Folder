@@ -80,8 +80,6 @@ public class TerrainChunk : MonoBehaviour
     private const float INSIDE_COLLIDER_THRESHOLD = 0.001f;
 
     private void Awake()
-
-    private void Awake()
     {
         // Cache components
         mf = GetComponent<MeshFilter>();
@@ -500,6 +498,8 @@ public class TerrainChunk : MonoBehaviour
     /// <summary>
     /// Compute terrain carving delta from construction colliders.
     /// Returns negative value to subtract from density (carve terrain).
+    /// Note: Inside detection uses distance threshold which works for most collider types,
+    /// but may have edge cases with complex MeshColliders.
     /// </summary>
     private float ComputeConstructionCarve(Vector3 worldPos, Collider[] colliders, float blendDistance, float strength)
     {
@@ -516,6 +516,7 @@ public class TerrainChunk : MonoBehaviour
             float distance = Vector3.Distance(worldPos, closest);
 
             // Check if point is inside collider (closest point equals sample point within threshold)
+            // Works reliably for primitive colliders; complex MeshColliders may need bounds pre-check
             bool isInside = distance < INSIDE_COLLIDER_THRESHOLD;
 
             if (isInside)
