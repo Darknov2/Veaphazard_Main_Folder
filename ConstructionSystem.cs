@@ -14,6 +14,9 @@ using UnityEngine.Events;
 /// </summary>
 public class ConstructionSystem : MonoBehaviour
 {
+    // Minimum bounds size to consider valid for terrain notification
+    private const float MIN_BOUNDS_THRESHOLD = 0.001f;
+
     [Header("Build Prefabs")]
     public GameObject[] buildPrefabs;
     public int selectedIndex = 0;
@@ -399,7 +402,7 @@ public class ConstructionSystem : MonoBehaviour
         if (terrain == null) return;
 
         Bounds bounds = CalculateObjectBounds(obj);
-        if (bounds.size.sqrMagnitude > 0.001f)
+        if (bounds.size.sqrMagnitude > MIN_BOUNDS_THRESHOLD)
         {
             terrain.NotifyConstructionChanged(bounds);
         }
@@ -466,7 +469,7 @@ public class ConstructionSystem : MonoBehaviour
         Destroy(root);
 
         // Notify terrain to regenerate (fill in the carved area)
-        if (terrain != null && bounds.size.sqrMagnitude > 0.001f)
+        if (terrain != null && bounds.size.sqrMagnitude > MIN_BOUNDS_THRESHOLD)
         {
             terrain.NotifyConstructionChanged(bounds);
         }

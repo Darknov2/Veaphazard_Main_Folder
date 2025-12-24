@@ -80,6 +80,8 @@ public class TerrainChunk : MonoBehaviour
     private const float INSIDE_COLLIDER_THRESHOLD = 0.001f;
 
     private void Awake()
+
+    private void Awake()
     {
         // Cache components
         mf = GetComponent<MeshFilter>();
@@ -194,7 +196,9 @@ public class TerrainChunk : MonoBehaviour
                 sizeY * scale,
                 sizeXZ * scale
             );
-            Bounds chunkBounds = new Bounds(basePos + chunkSize * 0.5f, chunkSize);
+            // Use world position for Physics.OverlapBox
+            Vector3 worldCenter = transform.position + chunkSize * 0.5f;
+            Bounds chunkBounds = new Bounds(worldCenter, chunkSize);
             constructionColliders = generator.GetConstructionCollidersForChunk(chunkBounds);
         }
 
@@ -216,7 +220,7 @@ public class TerrainChunk : MonoBehaviour
                     
                     // Apply construction carving
                     float carveDelta = 0f;
-                    if (constructionColliders != null && constructionColliders.Length > 0 && generator != null)
+                    if (constructionColliders != null && constructionColliders.Length > 0)
                     {
                         carveDelta = ComputeConstructionCarve(worldPos, constructionColliders, generator.colliderBlendDistance, generator.carveStrength);
                     }
@@ -511,8 +515,8 @@ public class TerrainChunk : MonoBehaviour
             Vector3 closest = collider.ClosestPoint(worldPos);
             float distance = Vector3.Distance(worldPos, closest);
 
-            // Check if point is inside collider (closest point equals sample point)
-            bool isInside = (closest == worldPos) || distance < INSIDE_COLLIDER_THRESHOLD;
+            // Check if point is inside collider (closest point equals sample point within threshold)
+            bool isInside = distance < INSIDE_COLLIDER_THRESHOLD;
 
             if (isInside)
             {

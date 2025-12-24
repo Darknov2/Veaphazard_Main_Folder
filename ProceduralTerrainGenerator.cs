@@ -68,7 +68,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     private readonly Dictionary<Vector3Int, TerrainChunk> chunks = new();
 
     // Cached empty array to avoid allocations when no construction layer mask
-    private static readonly Collider[] EmptyColliderArray = new Collider[0];
+    private static readonly Collider[] EmptyColliderArray = Array.Empty<Collider>();
 
     // Pending load candidates and a small set for coalescing
     private readonly HashSet<Vector3Int> pendingSet = new HashSet<Vector3Int>();
