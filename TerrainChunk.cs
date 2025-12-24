@@ -76,6 +76,9 @@ public class TerrainChunk : MonoBehaviour
         {0,4},{1,5},{2,6},{3,7}
     };
 
+    // Terrain carving constants
+    private const float INSIDE_COLLIDER_THRESHOLD = 0.001f;
+
     private void Awake()
     {
         // Cache components
@@ -184,7 +187,7 @@ public class TerrainChunk : MonoBehaviour
 
         // Query construction colliders for this chunk
         Collider[] constructionColliders = null;
-        if (generator != null)
+        if (generator != null && generator.constructionLayerMask != 0)
         {
             Vector3 chunkSize = new Vector3(
                 sizeXZ * scale,
@@ -508,8 +511,8 @@ public class TerrainChunk : MonoBehaviour
             Vector3 closest = collider.ClosestPoint(worldPos);
             float distance = Vector3.Distance(worldPos, closest);
 
-            // Check if point is inside collider
-            bool isInside = (closest == worldPos) || distance < 0.001f;
+            // Check if point is inside collider (closest point equals sample point)
+            bool isInside = (closest == worldPos) || distance < INSIDE_COLLIDER_THRESHOLD;
 
             if (isInside)
             {

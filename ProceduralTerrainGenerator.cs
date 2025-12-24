@@ -67,6 +67,9 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     private DensitySampler sampler;
     private readonly Dictionary<Vector3Int, TerrainChunk> chunks = new();
 
+    // Cached empty array to avoid allocations when no construction layer mask
+    private static readonly Collider[] EmptyColliderArray = new Collider[0];
+
     // Pending load candidates and a small set for coalescing
     private readonly HashSet<Vector3Int> pendingSet = new HashSet<Vector3Int>();
     private readonly List<Vector3Int> pendingList = new List<Vector3Int>();
@@ -588,7 +591,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     /// </summary>
     public Collider[] GetConstructionCollidersForChunk(Bounds chunkBounds)
     {
-        if (constructionLayerMask == 0) return new Collider[0];
+        if (constructionLayerMask == 0) return EmptyColliderArray;
 
         // Expand bounds by blend distance to catch nearby colliders
         Bounds expandedBounds = chunkBounds;
