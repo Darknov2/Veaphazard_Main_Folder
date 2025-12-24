@@ -14,6 +14,9 @@ using UnityEngine.Events;
 /// </summary>
 public class ConstructionSystem : MonoBehaviour
 {
+    // Minimum bounds size to consider valid for terrain notification
+    private const float MIN_BOUNDS_THRESHOLD = 0.001f;
+
     [Header("Build Prefabs")]
     public GameObject[] buildPrefabs;
     public int selectedIndex = 0;
@@ -229,6 +232,9 @@ public class ConstructionSystem : MonoBehaviour
 
             // notify listeners (e.g., to consume inventory item)
             onPlaced?.Invoke(obj);
+
+            // Notify terrain of construction object placement for carving
+            NotifyTerrainOfPlacement(obj);
         }
     }
 
@@ -385,6 +391,88 @@ public class ConstructionSystem : MonoBehaviour
         if (mat == null) return;
         foreach (var renderer in root.GetComponentsInChildren<Renderer>())
             renderer.material = mat;
+    }
+
+    /// <summary>
+    /// Notify terrain generator about a placed construction object.
+    /// Computes world bounds from colliders and triggers terrain carving.
+    /// </summary>
+    private void NotifyTerrainOfPlacement(GameObject obj)
+    {
+        if (terrain == null) return;
+
+        Bounds bounds = CalculateObjectBounds(obj);
+        if (bounds.size.sqrMagnitude > MIN_BOUNDS_THRESHOLD)
+        {
+            terrain.NotifyConstructionChanged(bounds);
+        }
+    }
+
+    /// <summary>
+    /// Calculate world-space bounds of an object from its colliders and renderers.
+    /// </summary>
+    private Bounds CalculateObjectBounds(GameObject obj)
+    {
+        Bounds bounds = new Bounds(obj.transform.position, Vector3.zero);
+        bool hasBounds = false;
+
+        // Include all colliders
+        var colliders = obj.GetComponentsInChildren<Collider>();
+        foreach (var col in colliders)
+        {
+            if (hasBounds)
+                bounds.Encapsulate(col.bounds);
+            else
+            {
+                bounds = col.bounds;
+                hasBounds = true;
+            }
+        }
+
+        // If no colliders, use renderers
+        if (!hasBounds)
+        {
+            var renderers = obj.GetComponentsInChildren<Renderer>();
+            foreach (var rend in renderers)
+            {
+                if (hasBounds)
+                    bounds.Encapsulate(rend.bounds);
+                else
+                {
+                    bounds = rend.bounds;
+                    hasBounds = true;
+                }
+            }
+        }
+
+        return bounds;
+    }
+
+    /// <summary>
+    /// Public API: Remove a placed construction object and notify terrain.
+    /// </summary>
+    public void RemovePlacedObject(GameObject obj)
+    {
+        if (obj == null) return;
+
+        GameObject root = GetPlacedRoot(obj);
+        if (!IsPlacedObject(root)) return;
+
+        // Calculate bounds before destroying
+        Bounds bounds = CalculateObjectBounds(root);
+
+        // Remove from tracking
+        placedRoots.Remove(root);
+        placedSnapSizeXYZ.Remove(root);
+
+        // Destroy object
+        Destroy(root);
+
+        // Notify terrain to regenerate (fill in the carved area)
+        if (terrain != null && bounds.size.sqrMagnitude > MIN_BOUNDS_THRESHOLD)
+        {
+            terrain.NotifyConstructionChanged(bounds);
+        }
     }
 
 #if UNITY_EDITOR
