@@ -25,6 +25,7 @@ public class TerrainChunk : MonoBehaviour
     private ProceduralTerrainConfig cfg;
     private DensitySampler sampler;
     private DensitySampler.DensityGates gates;
+    private ProceduralTerrainGenerator generator; // Reference to generator for collider queries
 
     // Mesh components
     private Mesh mesh;
@@ -99,6 +100,9 @@ public class TerrainChunk : MonoBehaviour
         sampler = densitySampler ?? throw new ArgumentNullException(nameof(densitySampler));
         gates = initialGates;
         ChunkCoord = coord;
+
+        // Get reference to generator
+        generator = GetComponentInParent<ProceduralTerrainGenerator>();
 
         // Position = chunk origin (min corner). Use localPosition to keep transform parented correctly.
         transform.localPosition = new Vector3(
@@ -178,7 +182,20 @@ public class TerrainChunk : MonoBehaviour
 
         Vector3 basePos = transform.localPosition;
 
-        // Pre-sample densities
+        // Query construction colliders for this chunk
+        Collider[] constructionColliders = null;
+        if (generator != null)
+        {
+            Vector3 chunkSize = new Vector3(
+                sizeXZ * scale,
+                sizeY * scale,
+                sizeXZ * scale
+            );
+            Bounds chunkBounds = new Bounds(basePos + chunkSize * 0.5f, chunkSize);
+            constructionColliders = generator.GetConstructionCollidersForChunk(chunkBounds);
+        }
+
+        // Pre-sample densities with construction carving
         for (int y = 0; y <= sizeY; y++)
         {
             float py = basePos.y + y * scale;
@@ -189,7 +206,19 @@ public class TerrainChunk : MonoBehaviour
                 for (int x = 0; x <= sizeXZ; x++)
                 {
                     float px = basePos.x + x * scale;
-                    density[yzBase + x] = sampler.SampleDensity(new Vector3(px, py, pz), gates);
+                    Vector3 worldPos = new Vector3(px, py, pz);
+                    
+                    // Sample base density from terrain
+                    float baseDensity = sampler.SampleDensity(worldPos, gates);
+                    
+                    // Apply construction carving
+                    float carveDelta = 0f;
+                    if (constructionColliders != null && constructionColliders.Length > 0 && generator != null)
+                    {
+                        carveDelta = ComputeConstructionCarve(worldPos, constructionColliders, generator.colliderBlendDistance, generator.carveStrength);
+                    }
+                    
+                    density[yzBase + x] = baseDensity + carveDelta;
                 }
             }
         }
@@ -459,5 +488,44 @@ public class TerrainChunk : MonoBehaviour
         else overlayMR.enabled = to > 0.5f;
 
         overlayFadeRoutine = null;
+    }
+
+    /// <summary>
+    /// Compute terrain carving delta from construction colliders.
+    /// Returns negative value to subtract from density (carve terrain).
+    /// </summary>
+    private float ComputeConstructionCarve(Vector3 worldPos, Collider[] colliders, float blendDistance, float strength)
+    {
+        if (colliders == null || colliders.Length == 0) return 0f;
+
+        float maxCarve = 0f; // Track strongest carve (most negative)
+
+        foreach (var collider in colliders)
+        {
+            if (collider == null) continue;
+
+            // Get closest point on collider to this voxel position
+            Vector3 closest = collider.ClosestPoint(worldPos);
+            float distance = Vector3.Distance(worldPos, closest);
+
+            // Check if point is inside collider
+            bool isInside = (closest == worldPos) || distance < 0.001f;
+
+            if (isInside)
+            {
+                // Point is inside collider - apply full carve
+                maxCarve = Mathf.Min(maxCarve, -strength);
+            }
+            else if (distance < blendDistance)
+            {
+                // Point is within blend distance - apply smooth falloff
+                float t = distance / blendDistance; // 0 at surface, 1 at blend distance
+                float falloff = 1f - (t * t); // Quadratic falloff (smooth)
+                float carve = -strength * falloff;
+                maxCarve = Mathf.Min(maxCarve, carve);
+            }
+        }
+
+        return maxCarve;
     }
 }

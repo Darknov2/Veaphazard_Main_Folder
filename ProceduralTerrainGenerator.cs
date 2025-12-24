@@ -53,6 +53,15 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     [Tooltip("Extra padding added around the chunk bounds for local NavMesh updates.")]
     public float navmeshBoundsPadding = 0.5f;
 
+    [Header("Construction Terrain Carving")]
+    [Tooltip("Layer mask for construction objects that should carve terrain (e.g., buildings, structures).")]
+    public LayerMask constructionLayerMask = 0;
+    [Tooltip("Blend/falloff distance around collider surface for smooth carving transitions.")]
+    public float colliderBlendDistance = 0.15f;
+    [Tooltip("Strength of terrain carving. 1.0 = full carve, lower values = partial carve.")]
+    [Range(0f, 2f)]
+    public float carveStrength = 1.0f;
+
     // Internal state
     private float nextStreamTime;
     private DensitySampler sampler;
@@ -502,6 +511,95 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             settings,
             sources,
             bounds
+        );
+    }
+
+    /// <summary>
+    /// Public API: Notify terrain that a construction object has been placed/moved/removed.
+    /// Determines which chunks overlap the given world bounds and regenerates them.
+    /// </summary>
+    /// <param name="worldBounds">World-space bounds of the construction object that changed.</param>
+    public void NotifyConstructionChanged(Bounds worldBounds)
+    {
+        if (config == null) return;
+
+        // Expand bounds slightly to ensure we catch all overlapping chunks
+        worldBounds.Expand(colliderBlendDistance * 2f);
+
+        // Find all chunks that overlap this bounds
+        var affectedChunks = FindChunksOverlappingBounds(worldBounds);
+
+        // Regenerate each affected chunk
+        foreach (var coord in affectedChunks)
+        {
+            EnqueueChunkRebuild(coord);
+        }
+    }
+
+    /// <summary>
+    /// Find all chunk coordinates that overlap the given world bounds.
+    /// </summary>
+    private List<Vector3Int> FindChunksOverlappingBounds(Bounds worldBounds)
+    {
+        var result = new List<Vector3Int>();
+
+        float chunkSizeX = config.chunkSizeXZ * config.voxelScale;
+        float chunkSizeY = config.chunkSizeY * config.voxelScale;
+        float chunkSizeZ = config.chunkSizeXZ * config.voxelScale;
+
+        // Convert world bounds to chunk-space
+        Vector3 localMin = worldBounds.min - config.worldOffset;
+        Vector3 localMax = worldBounds.max - config.worldOffset;
+
+        // Calculate chunk index ranges
+        int minChunkX = Mathf.FloorToInt(localMin.x / chunkSizeX);
+        int maxChunkX = Mathf.FloorToInt(localMax.x / chunkSizeX);
+        int minChunkY = Mathf.FloorToInt(localMin.y / chunkSizeY);
+        int maxChunkY = Mathf.FloorToInt(localMax.y / chunkSizeY);
+        int minChunkZ = Mathf.FloorToInt(localMin.z / chunkSizeZ);
+        int maxChunkZ = Mathf.FloorToInt(localMax.z / chunkSizeZ);
+
+        // Clamp to valid chunk ranges
+        minChunkX = Mathf.Max(0, minChunkX);
+        maxChunkX = Mathf.Min(config.chunksX - 1, maxChunkX);
+        minChunkY = Mathf.Max(0, minChunkY);
+        maxChunkY = Mathf.Min(config.chunksY - 1, maxChunkY);
+        minChunkZ = Mathf.Max(0, minChunkZ);
+        maxChunkZ = Mathf.Min(config.chunksZ - 1, maxChunkZ);
+
+        // Add all overlapping chunks
+        for (int y = minChunkY; y <= maxChunkY; y++)
+        {
+            for (int z = minChunkZ; z <= maxChunkZ; z++)
+            {
+                for (int x = minChunkX; x <= maxChunkX; x++)
+                {
+                    result.Add(new Vector3Int(x, y, z));
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Get colliders within chunk bounds for terrain carving.
+    /// Called by TerrainChunk during generation.
+    /// </summary>
+    public Collider[] GetConstructionCollidersForChunk(Bounds chunkBounds)
+    {
+        if (constructionLayerMask == 0) return new Collider[0];
+
+        // Expand bounds by blend distance to catch nearby colliders
+        Bounds expandedBounds = chunkBounds;
+        expandedBounds.Expand(colliderBlendDistance * 2f);
+
+        // Use OverlapBox to find all colliders in the expanded bounds
+        return Physics.OverlapBox(
+            expandedBounds.center,
+            expandedBounds.extents,
+            Quaternion.identity,
+            constructionLayerMask
         );
     }
 }
