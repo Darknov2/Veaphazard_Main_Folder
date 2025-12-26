@@ -88,7 +88,7 @@ public class ConstructionSystem : MonoBehaviour
     private void ResolveTerrainReference()
     {
         if (terrain == null)
-            terrain = Object.FindFirstObjectByType<ProceduralTerrainGenerator>();
+            terrain = SceneFind.First<ProceduralTerrainGenerator>();
 
         if (terrain != null)
             cfg = terrain.config;
@@ -226,6 +226,24 @@ public class ConstructionSystem : MonoBehaviour
             // Record this instance as a placed object with its per-instance snap size
             placedRoots.Add(obj);
             placedSnapSizeXYZ[obj] = currentSize;
+
+            // Attach ConstructionTerrainNotifier if not already present
+            if (terrain != null)
+            {
+                var notifier = obj.GetComponent<ConstructionTerrainNotifier>();
+                if (notifier == null)
+                {
+                    notifier = obj.AddComponent<ConstructionTerrainNotifier>();
+                }
+                notifier.terrain = terrain;
+
+                // Notify terrain of the instance bounds after placement
+                Bounds bounds = ComputeInstanceBounds(obj);
+                if (bounds.size.sqrMagnitude > 0.001f)
+                {
+                    terrain.NotifyConstructionChanged(bounds);
+                }
+            }
 
             // notify listeners (e.g., to consume inventory item)
             onPlaced?.Invoke(obj);
@@ -385,6 +403,41 @@ public class ConstructionSystem : MonoBehaviour
         if (mat == null) return;
         foreach (var renderer in root.GetComponentsInChildren<Renderer>())
             renderer.material = mat;
+    }
+
+    /// <summary>
+    /// Compute bounds from colliders (preferred) or renderers (fallback).
+    /// </summary>
+    private Bounds ComputeInstanceBounds(GameObject obj)
+    {
+        if (obj == null) return new Bounds(Vector3.zero, Vector3.zero);
+
+        // Try colliders first
+        Collider[] colliders = obj.GetComponentsInChildren<Collider>();
+        if (colliders.Length > 0)
+        {
+            Bounds bounds = colliders[0].bounds;
+            for (int i = 1; i < colliders.Length; i++)
+            {
+                bounds.Encapsulate(colliders[i].bounds);
+            }
+            return bounds;
+        }
+
+        // Fallback to renderers
+        Renderer[] renderers = obj.GetComponentsInChildren<Renderer>();
+        if (renderers.Length > 0)
+        {
+            Bounds bounds = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+            {
+                bounds.Encapsulate(renderers[i].bounds);
+            }
+            return bounds;
+        }
+
+        // No colliders or renderers
+        return new Bounds(obj.transform.position, Vector3.one * 0.5f);
     }
 
 #if UNITY_EDITOR
