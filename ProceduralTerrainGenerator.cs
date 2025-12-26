@@ -74,6 +74,9 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     private float lastTargetY;
     private bool firstUpdate = true;
 
+    // Cached array for collider overlap queries (reduces GC pressure)
+    private Collider[] colliderBuffer = new Collider[64];
+
     public event Action OnInitialTerrainReady;
     public bool IsInitialTerrainReady { get; private set; }
 
@@ -558,6 +561,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
 
     /// <summary>
     /// Collect nearby construction colliders around a chunk for carving.
+    /// Uses cached buffer to reduce GC pressure.
     /// </summary>
     public Collider[] CollectNearbyConstructionColliders(TerrainChunk chunk)
     {
@@ -572,7 +576,20 @@ public class ProceduralTerrainGenerator : MonoBehaviour
         Vector3 center = chunk.transform.position + chunkSize * 0.5f;
         Vector3 halfExtents = chunkSize * 0.5f + Vector3.one * carvingRadius;
 
-        return Physics.OverlapBox(center, halfExtents, Quaternion.identity, constructionLayerMask);
+        // Use NonAlloc version with cached buffer to reduce allocations
+        int count = Physics.OverlapBoxNonAlloc(center, halfExtents, colliderBuffer, Quaternion.identity, constructionLayerMask);
+        
+        // If buffer was too small, expand it
+        if (count == colliderBuffer.Length)
+        {
+            colliderBuffer = new Collider[colliderBuffer.Length * 2];
+            count = Physics.OverlapBoxNonAlloc(center, halfExtents, colliderBuffer, Quaternion.identity, constructionLayerMask);
+        }
+
+        // Return only the filled portion
+        Collider[] result = new Collider[count];
+        System.Array.Copy(colliderBuffer, result, count);
+        return result;
     }
 
     /// <summary>
