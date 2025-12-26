@@ -53,6 +53,12 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     [Tooltip("Extra padding added around the chunk bounds for local NavMesh updates.")]
     public float navmeshBoundsPadding = 0.5f;
 
+    [Header("Construction Carving")]
+    [Tooltip("Layer mask for construction objects that should carve terrain.")]
+    public LayerMask constructionLayerMask = 0;
+    [Tooltip("Distance to blend construction carving (world units).")]
+    public float colliderBlendDistance = 2f;
+
     // Internal state
     private float nextStreamTime;
     private DensitySampler sampler;
@@ -298,6 +304,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             else
             {
                 chunk.Generate();
+                AttemptCarveChunk(chunk);
                 TryUpdateNavMeshForChunk(chunk);
             }
 
@@ -348,6 +355,8 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     private IEnumerator GenerateChunkAsync(TerrainChunk chunk)
     {
         chunk.Generate();
+        // Attempt construction carving
+        AttemptCarveChunk(chunk);
         // After mesh/collider ready, update local navmesh area for this chunk
         TryUpdateNavMeshForChunk(chunk);
         yield return null;
@@ -386,6 +395,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
                     var chunk = CreateChunkGO(c);
                     chunks.Add(c, chunk);
                     chunk.Generate();
+                    AttemptCarveChunk(chunk);
                     TryUpdateNavMeshForChunk(chunk);
 
                     float worldY = chunk.transform.position.y;
@@ -461,6 +471,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             else
             {
                 chunk.Generate();
+                AttemptCarveChunk(chunk);
                 TryUpdateNavMeshForChunk(chunk);
             }
         }
@@ -503,5 +514,140 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             sources,
             bounds
         );
+    }
+
+    /// <summary>
+    /// Called by ConstructionTerrainNotifier when a construction object is placed, moved, or destroyed.
+    /// Finds and rebuilds chunks intersecting the given bounds.
+    /// </summary>
+    public void NotifyConstructionChanged(Bounds bounds)
+    {
+        if (chunks.Count == 0) return;
+
+        // Expand bounds slightly to catch nearby chunks
+        bounds.Expand(colliderBlendDistance * 2f);
+
+        // Find chunks that intersect the bounds
+        List<Vector3Int> affectedChunks = new List<Vector3Int>();
+        foreach (var kv in chunks)
+        {
+            if (kv.Value == null) continue;
+
+            // Compute chunk bounds
+            Vector3 chunkSize = new Vector3(
+                config.chunkSizeXZ * config.voxelScale,
+                config.chunkSizeY * config.voxelScale,
+                config.chunkSizeXZ * config.voxelScale
+            );
+            Bounds chunkBounds = new Bounds(kv.Value.transform.position + chunkSize * 0.5f, chunkSize);
+
+            if (chunkBounds.Intersects(bounds))
+            {
+                affectedChunks.Add(kv.Key);
+            }
+        }
+
+        // Rebuild affected chunks
+        foreach (var coord in affectedChunks)
+        {
+            EnqueueChunkRebuild(coord);
+        }
+    }
+
+    /// <summary>
+    /// Attempt to carve terrain around construction objects for a newly generated chunk.
+    /// Called after chunk.Generate() completes.
+    /// </summary>
+    private void AttemptCarveChunk(TerrainChunk chunk)
+    {
+        if (chunk == null || constructionLayerMask == 0) return;
+
+        // Compute chunk bounds
+        Vector3 chunkSize = new Vector3(
+            config.chunkSizeXZ * config.voxelScale,
+            config.chunkSizeY * config.voxelScale,
+            config.chunkSizeXZ * config.voxelScale
+        );
+        Bounds bounds = new Bounds(chunk.transform.position + chunkSize * 0.5f, chunkSize);
+
+        // Collect nearby construction colliders
+        Collider[] colliders = CollectNearbyConstructionColliders(bounds, colliderBlendDistance);
+        if (colliders == null || colliders.Length == 0) return;
+
+        // Try to invoke ApplyConstructionCarving via reflection
+        try
+        {
+            var method = typeof(TerrainChunk).GetMethod("ApplyConstructionCarving", 
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            
+            if (method != null)
+            {
+                method.Invoke(chunk, new object[] { colliders });
+            }
+            else
+            {
+                // Fallback to SendMessage
+                chunk.SendMessage("ApplyConstructionCarving", colliders, SendMessageOptions.DontRequireReceiver);
+            }
+        }
+        catch (System.Exception)
+        {
+            // Silently ignore reflection errors
+        }
+    }
+
+    /// <summary>
+    /// Collect colliders from nearby construction objects within blend distance of the given bounds.
+    /// </summary>
+    public Collider[] CollectNearbyConstructionColliders(Bounds bounds, float blendDistance)
+    {
+        if (constructionLayerMask == 0) return new Collider[0];
+
+        // Expand bounds by blend distance
+        Bounds searchBounds = bounds;
+        searchBounds.Expand(blendDistance * 2f);
+
+        // Use OverlapBox to find colliders
+        return Physics.OverlapBox(
+            searchBounds.center,
+            searchBounds.extents,
+            Quaternion.identity,
+            constructionLayerMask
+        );
+    }
+
+    /// <summary>
+    /// Sample density at a position with construction carving applied.
+    /// Subtracts density near construction colliders to create holes.
+    /// </summary>
+    public float SampleDensityWithCarving(Vector3 worldPos, Collider[] colliders)
+    {
+        if (sampler == null) return 0f;
+
+        // Get base density from normal sampler
+        float baseDensity = sampler.SampleDensity(worldPos, DensitySampler.DensityGates.AllOn);
+
+        if (colliders == null || colliders.Length == 0) return baseDensity;
+
+        // Subtract density for each nearby construction collider
+        float carvingAmount = 0f;
+        foreach (var collider in colliders)
+        {
+            if (collider == null) continue;
+
+            // Find closest point on collider to worldPos
+            Vector3 closestPoint = collider.ClosestPoint(worldPos);
+            float distance = Vector3.Distance(worldPos, closestPoint);
+
+            if (distance < colliderBlendDistance)
+            {
+                // Smooth falloff: full carving at surface, fades to zero at blendDistance
+                float t = 1f - (distance / colliderBlendDistance);
+                t = t * t; // quadratic falloff
+                carvingAmount += t * 100f; // large value to ensure carving
+            }
+        }
+
+        return baseDensity - carvingAmount;
     }
 }

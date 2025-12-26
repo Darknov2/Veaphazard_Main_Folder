@@ -72,6 +72,14 @@ public class RandomObjectSpawner : MonoBehaviour
     public string objectSurfaceName = "SpawnedObjectsNavMeshSurface";
     public bool createAndBakeObjectSurface = true;
 
+    [Header("Construction Terrain Integration")]
+    [Tooltip("If true, set spawned instances to the first layer in generator's constructionLayerMask.")]
+    public bool enforceConstructionLayer = false;
+    [Tooltip("If true, automatically add ConstructionTerrainNotifier to spawned instances.")]
+    public bool autoAddConstructionNotifier = false;
+    [Tooltip("If true, notify terrain generator immediately after spawning for terrain carving.")]
+    public bool notifyTerrainOnSpawn = false;
+
     // runtime bounds / grid indices
     private bool hasBounds;
     private Vector3 minBound, maxBound;
@@ -80,7 +88,7 @@ public class RandomObjectSpawner : MonoBehaviour
     private void Awake()
     {
         if (generator == null)
-            generator = FindObjectOfType<ProceduralTerrainGenerator>();
+            generator = SceneFind.First<ProceduralTerrainGenerator>();
     }
 
     private void OnEnable()
@@ -267,10 +275,42 @@ public class RandomObjectSpawner : MonoBehaviour
                             rot = Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
                         }
 
+                        GameObject instance;
                         if (parent != null)
-                            Instantiate(entry.prefab, pos, rot, parent);
+                            instance = Instantiate(entry.prefab, pos, rot, parent);
                         else
-                            Instantiate(entry.prefab, pos, rot);
+                            instance = Instantiate(entry.prefab, pos, rot);
+
+                        // Apply construction layer if requested
+                        if (enforceConstructionLayer && generator != null && generator.constructionLayerMask != 0)
+                        {
+                            int constructionLayer = GetFirstLayerFromMask(generator.constructionLayerMask);
+                            if (constructionLayer >= 0)
+                            {
+                                SetLayerRecursively(instance, constructionLayer);
+                            }
+                        }
+
+                        // Add ConstructionTerrainNotifier if requested
+                        if (autoAddConstructionNotifier && instance != null)
+                        {
+                            var notifier = instance.GetComponent<ConstructionTerrainNotifier>();
+                            if (notifier == null)
+                            {
+                                notifier = instance.AddComponent<ConstructionTerrainNotifier>();
+                            }
+                            if (generator != null)
+                            {
+                                notifier.terrain = generator;
+                            }
+                        }
+
+                        // Notify terrain for immediate carving if requested
+                        if (notifyTerrainOnSpawn && generator != null && instance != null)
+                        {
+                            Bounds instanceBounds = ComputeInstanceBounds(instance);
+                            generator.NotifyConstructionChanged(instanceBounds);
+                        }
 
                         placed = true;
                     }
@@ -363,5 +403,55 @@ public class RandomObjectSpawner : MonoBehaviour
         root.layer = layer;
         foreach (Transform child in root.transform)
             SetLayerRecursively(child.gameObject, layer);
+    }
+
+    /// <summary>
+    /// Get the first layer index from a LayerMask.
+    /// </summary>
+    private int GetFirstLayerFromMask(LayerMask mask)
+    {
+        for (int i = 0; i < 32; i++)
+        {
+            if ((mask.value & (1 << i)) != 0)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// Compute bounds of a spawned instance (from colliders or renderers).
+    /// </summary>
+    private Bounds ComputeInstanceBounds(GameObject instance)
+    {
+        if (instance == null) return new Bounds(Vector3.zero, Vector3.one);
+
+        // Try colliders first
+        Collider[] colliders = instance.GetComponentsInChildren<Collider>();
+        if (colliders.Length > 0)
+        {
+            Bounds b = colliders[0].bounds;
+            for (int i = 1; i < colliders.Length; i++)
+            {
+                b.Encapsulate(colliders[i].bounds);
+            }
+            return b;
+        }
+
+        // Fallback to renderers
+        Renderer[] renderers = instance.GetComponentsInChildren<Renderer>();
+        if (renderers.Length > 0)
+        {
+            Bounds b = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+            {
+                b.Encapsulate(renderers[i].bounds);
+            }
+            return b;
+        }
+
+        // Last resort
+        return new Bounds(instance.transform.position, Vector3.one * 2f);
     }
 }
