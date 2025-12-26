@@ -53,6 +53,14 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     [Tooltip("Extra padding added around the chunk bounds for local NavMesh updates.")]
     public float navmeshBoundsPadding = 0.5f;
 
+    [Header("Construction Carving")]
+    [Tooltip("Layer mask for construction objects that should carve holes in terrain.")]
+    public LayerMask constructionLayerMask = 0;
+    [Tooltip("Radius around construction objects where terrain should be carved (world units).")]
+    public float carvingRadius = 2f;
+    [Tooltip("Strength/depth of construction carving effect.")]
+    public float carvingStrength = 10f;
+
     // Internal state
     private float nextStreamTime;
     private DensitySampler sampler;
@@ -65,6 +73,9 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     // Last camera Y for direction detection
     private float lastTargetY;
     private bool firstUpdate = true;
+
+    // Cached array for collider overlap queries (reduces GC pressure)
+    private Collider[] colliderBuffer = new Collider[64];
 
     public event Action OnInitialTerrainReady;
     public bool IsInitialTerrainReady { get; private set; }
@@ -298,6 +309,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             else
             {
                 chunk.Generate();
+                AttemptCarveChunk(chunk); // Carving integration: carve after sync generation in streaming
                 TryUpdateNavMeshForChunk(chunk);
             }
 
@@ -348,6 +360,8 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     private IEnumerator GenerateChunkAsync(TerrainChunk chunk)
     {
         chunk.Generate();
+        // Carving integration: after initial generation, attempt to carve construction objects
+        AttemptCarveChunk(chunk);
         // After mesh/collider ready, update local navmesh area for this chunk
         TryUpdateNavMeshForChunk(chunk);
         yield return null;
@@ -386,6 +400,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
                     var chunk = CreateChunkGO(c);
                     chunks.Add(c, chunk);
                     chunk.Generate();
+                    AttemptCarveChunk(chunk); // Carving integration: carve after sync generation in immediate mode
                     TryUpdateNavMeshForChunk(chunk);
 
                     float worldY = chunk.transform.position.y;
@@ -461,6 +476,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             else
             {
                 chunk.Generate();
+                AttemptCarveChunk(chunk); // Carving integration: carve after rebuild
                 TryUpdateNavMeshForChunk(chunk);
             }
         }
@@ -503,5 +519,122 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             sources,
             bounds
         );
+    }
+
+    // ==================== Construction Carving Integration ====================
+
+    /// <summary>
+    /// Called by ConstructionTerrainNotifier when a construction object is placed, moved, or destroyed.
+    /// Finds and rebuilds intersecting chunks.
+    /// </summary>
+    public void NotifyConstructionChanged(Bounds constructionBounds)
+    {
+        if (config == null || sampler == null) return;
+
+        // Expand bounds slightly to ensure we catch nearby chunks
+        constructionBounds.Expand(carvingRadius * 2f);
+
+        // Find all chunks that intersect with the construction bounds
+        Vector3 chunkSize = new Vector3(
+            config.chunkSizeXZ * config.voxelScale,
+            config.chunkSizeY * config.voxelScale,
+            config.chunkSizeXZ * config.voxelScale
+        );
+
+        foreach (var kvp in chunks)
+        {
+            var chunk = kvp.Value;
+            if (chunk == null) continue;
+
+            Bounds chunkBounds = new Bounds(
+                chunk.transform.position + chunkSize * 0.5f,
+                chunkSize
+            );
+
+            if (chunkBounds.Intersects(constructionBounds))
+            {
+                // Enqueue rebuild for this chunk
+                EnqueueChunkRebuild(kvp.Key);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Collect nearby construction colliders around a chunk for carving.
+    /// Uses cached buffer to reduce GC pressure.
+    /// </summary>
+    public Collider[] CollectNearbyConstructionColliders(TerrainChunk chunk)
+    {
+        if (chunk == null || constructionLayerMask == 0) return new Collider[0];
+
+        Vector3 chunkSize = new Vector3(
+            config.chunkSizeXZ * config.voxelScale,
+            config.chunkSizeY * config.voxelScale,
+            config.chunkSizeXZ * config.voxelScale
+        );
+
+        Vector3 center = chunk.transform.position + chunkSize * 0.5f;
+        Vector3 halfExtents = chunkSize * 0.5f + Vector3.one * carvingRadius;
+
+        // Use NonAlloc version with cached buffer to reduce allocations
+        int count = Physics.OverlapBoxNonAlloc(center, halfExtents, colliderBuffer, Quaternion.identity, constructionLayerMask);
+        
+        // If buffer was too small, expand it
+        if (count == colliderBuffer.Length)
+        {
+            colliderBuffer = new Collider[colliderBuffer.Length * 2];
+            count = Physics.OverlapBoxNonAlloc(center, halfExtents, colliderBuffer, Quaternion.identity, constructionLayerMask);
+        }
+
+        // Return only the filled portion (small allocation, but buffer reuse is the main optimization)
+        Collider[] result = new Collider[count];
+        System.Array.Copy(colliderBuffer, result, count);
+        return result;
+    }
+
+    /// <summary>
+    /// Sample density with construction carving applied.
+    /// Subtracts density near construction colliders to create holes.
+    /// </summary>
+    public float SampleDensityWithCarving(Vector3 worldPos, DensitySampler.DensityGates gates, Collider[] constructionColliders)
+    {
+        float baseDensity = sampler.SampleDensity(worldPos, gates);
+
+        if (constructionColliders == null || constructionColliders.Length == 0)
+            return baseDensity;
+
+        // Apply carving: subtract density for each nearby construction object
+        float carvingAmount = 0f;
+        foreach (var col in constructionColliders)
+        {
+            if (col == null) continue;
+
+            Vector3 closestPoint = col.ClosestPoint(worldPos);
+            float distance = Vector3.Distance(worldPos, closestPoint);
+
+            if (distance < carvingRadius)
+            {
+                // Smooth falloff from center to radius
+                float t = 1f - (distance / carvingRadius);
+                carvingAmount += carvingStrength * t * t; // quadratic falloff
+            }
+        }
+
+        return baseDensity - carvingAmount;
+    }
+
+    /// <summary>
+    /// Attempt to carve construction objects into a chunk after generation.
+    /// Calls ApplyConstructionCarving on the chunk to re-sample with carving applied.
+    /// </summary>
+    private void AttemptCarveChunk(TerrainChunk chunk)
+    {
+        if (chunk == null || constructionLayerMask == 0) return;
+
+        Collider[] nearbyColliders = CollectNearbyConstructionColliders(chunk);
+        if (nearbyColliders.Length == 0) return;
+
+        // Call ApplyConstructionCarving directly (no reflection needed)
+        chunk.ApplyConstructionCarving(nearbyColliders);
     }
 }

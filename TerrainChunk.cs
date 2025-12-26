@@ -39,6 +39,9 @@ public class TerrainChunk : MonoBehaviour
     private Material overlayMaterialInstance;
     private Coroutine overlayFadeRoutine;
 
+    // Cached generator reference for carving
+    private ProceduralTerrainGenerator cachedGenerator;
+
     // marching cubes working data
     private float[] density;
     private int nx, ny, nz;
@@ -205,6 +208,25 @@ public class TerrainChunk : MonoBehaviour
         normals.Clear();
         indices.Clear();
 
+        // Generate mesh from densities using marching cubes
+        GenerateMeshFromDensities(cfg.chunkSizeXZ, cfg.chunkSizeY);
+
+        if (indices.Count == 0)
+        {
+            ClearMeshAndDisableCollider();
+            return;
+        }
+
+        // apply mesh
+        ApplyMeshData();
+    }
+
+    /// <summary>
+    /// Generate mesh geometry from pre-sampled density array using marching cubes algorithm.
+    /// Shared by Generate() and ApplyConstructionCarving().
+    /// </summary>
+    private void GenerateMeshFromDensities(int sizeXZ, int sizeY)
+    {
         // Marching cubes
         for (int y = 0; y < sizeY; y++)
         {
@@ -290,14 +312,14 @@ public class TerrainChunk : MonoBehaviour
                 }
             }
         }
+    }
 
-        if (indices.Count == 0)
-        {
-            ClearMeshAndDisableCollider();
-            return;
-        }
-
-        // apply mesh
+    /// <summary>
+    /// Apply collected vertices/normals/indices to the mesh and collider.
+    /// Shared by Generate() and ApplyConstructionCarving().
+    /// </summary>
+    private void ApplyMeshData()
+    {
         mesh.Clear();
         mesh.SetVertices(vertices);
         mesh.SetTriangles(indices, 0, true);
@@ -459,5 +481,96 @@ public class TerrainChunk : MonoBehaviour
         else overlayMR.enabled = to > 0.5f;
 
         overlayFadeRoutine = null;
+    }
+
+    // ==================== Construction Carving Integration ====================
+
+    /// <summary>
+    /// Re-sample densities with construction carving applied and rebuild the mesh.
+    /// Called by ProceduralTerrainGenerator after detecting nearby construction objects.
+    /// </summary>
+    public void ApplyConstructionCarving(Collider[] nearbyColliders)
+    {
+        if (cfg == null || sampler == null)
+        {
+            Debug.LogWarning($"[TerrainChunk] ApplyConstructionCarving called before Initialize on {gameObject.name}");
+            return;
+        }
+
+        if (nearbyColliders == null || nearbyColliders.Length == 0)
+        {
+            // No construction objects nearby, just regenerate normally
+            Generate();
+            return;
+        }
+
+        // Find the generator to access SampleDensityWithCarving (cache for efficiency)
+        if (cachedGenerator == null)
+        {
+            cachedGenerator = GetComponentInParent<ProceduralTerrainGenerator>();
+            if (cachedGenerator == null)
+            {
+                cachedGenerator = SceneFind.First<ProceduralTerrainGenerator>();
+            }
+        }
+
+        if (cachedGenerator == null)
+        {
+            Debug.LogWarning($"[TerrainChunk] ApplyConstructionCarving: Cannot find ProceduralTerrainGenerator");
+            Generate(); // Fallback to normal generation
+            return;
+        }
+
+        // Re-sample densities with carving
+        int sizeXZ = cfg.chunkSizeXZ;
+        int sizeY = cfg.chunkSizeY;
+
+        nx = sizeXZ + 1;
+        ny = sizeY + 1;
+        nz = sizeXZ + 1;
+        int needed = nx * ny * nz;
+        if (density == null || density.Length != needed) density = new float[needed];
+
+        Vector3 basePos = transform.localPosition;
+
+        // Sample densities with carving applied
+        for (int y = 0; y <= sizeY; y++)
+        {
+            float py = basePos.y + y * scale;
+            for (int z = 0; z <= sizeXZ; z++)
+            {
+                float pz = basePos.z + z * scale;
+                int yzBase = ((y * nz) + z) * nx;
+                for (int x = 0; x <= sizeXZ; x++)
+                {
+                    float px = basePos.x + x * scale;
+                    Vector3 worldPos = new Vector3(px, py, pz);
+                    density[yzBase + x] = cachedGenerator.SampleDensityWithCarving(worldPos, gates, nearbyColliders);
+                }
+            }
+        }
+
+        // Check if chunk is now empty after carving
+        if (enableEmptyChunkSkip && IsHomogeneousFull())
+        {
+            ClearMeshAndDisableCollider();
+            return;
+        }
+
+        // Rebuild mesh using shared marching cubes method
+        vertices.Clear();
+        normals.Clear();
+        indices.Clear();
+
+        GenerateMeshFromDensities(sizeXZ, sizeY);
+
+        if (indices.Count == 0)
+        {
+            ClearMeshAndDisableCollider();
+            return;
+        }
+
+        // Apply mesh (shared method)
+        ApplyMeshData();
     }
 }

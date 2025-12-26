@@ -72,6 +72,12 @@ public class RandomObjectSpawner : MonoBehaviour
     public string objectSurfaceName = "SpawnedObjectsNavMeshSurface";
     public bool createAndBakeObjectSurface = true;
 
+    [Header("Construction Carving Integration")]
+    [Tooltip("If true, assign spawned objects to the first layer in generator.constructionLayerMask.")]
+    public bool enforceConstructionLayer = true;
+    [Tooltip("If true, attach ConstructionTerrainNotifier to spawned objects.")]
+    public bool attachTerrainNotifier = true;
+
     // runtime bounds / grid indices
     private bool hasBounds;
     private Vector3 minBound, maxBound;
@@ -80,7 +86,7 @@ public class RandomObjectSpawner : MonoBehaviour
     private void Awake()
     {
         if (generator == null)
-            generator = FindObjectOfType<ProceduralTerrainGenerator>();
+            generator = SceneFind.First<ProceduralTerrainGenerator>();
     }
 
     private void OnEnable()
@@ -267,10 +273,37 @@ public class RandomObjectSpawner : MonoBehaviour
                             rot = Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
                         }
 
+                        GameObject instance;
                         if (parent != null)
-                            Instantiate(entry.prefab, pos, rot, parent);
+                            instance = Instantiate(entry.prefab, pos, rot, parent);
                         else
-                            Instantiate(entry.prefab, pos, rot);
+                            instance = Instantiate(entry.prefab, pos, rot);
+
+                        // Construction carving integration: set layer and attach notifier
+                        if (instance != null && generator != null)
+                        {
+                            // Set to construction layer if enabled
+                            if (enforceConstructionLayer && generator.constructionLayerMask != 0)
+                            {
+                                int targetLayer = GetFirstLayerFromMask(generator.constructionLayerMask);
+                                if (targetLayer >= 0)
+                                {
+                                    SetLayerRecursively(instance, targetLayer);
+                                }
+                            }
+
+                            // Attach notifier if enabled (notifier will handle notification on Start)
+                            if (attachTerrainNotifier)
+                            {
+                                var notifier = instance.GetComponent<ConstructionTerrainNotifier>();
+                                if (notifier == null)
+                                {
+                                    notifier = instance.AddComponent<ConstructionTerrainNotifier>();
+                                }
+                                notifier.terrain = generator;
+                                notifier.notifyOnStart = true; // Notifier will trigger notification on Start()
+                            }
+                        }
 
                         placed = true;
                     }
@@ -363,5 +396,17 @@ public class RandomObjectSpawner : MonoBehaviour
         root.layer = layer;
         foreach (Transform child in root.transform)
             SetLayerRecursively(child.gameObject, layer);
+    }
+
+    // Helper: extract first layer index from a LayerMask
+    private int GetFirstLayerFromMask(LayerMask mask)
+    {
+        int maskValue = mask.value;
+        for (int i = 0; i < 32; i++)
+        {
+            if ((maskValue & (1 << i)) != 0)
+                return i;
+        }
+        return -1;
     }
 }
