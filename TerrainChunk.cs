@@ -298,6 +298,15 @@ public class TerrainChunk : MonoBehaviour
         }
 
         // apply mesh
+        ApplyMeshData();
+    }
+
+    /// <summary>
+    /// Apply collected vertices/normals/indices to the mesh and collider.
+    /// Shared by Generate() and ApplyConstructionCarving().
+    /// </summary>
+    private void ApplyMeshData()
+    {
         mesh.Clear();
         mesh.SetVertices(vertices);
         mesh.SetTriangles(indices, 0, true);
@@ -486,7 +495,7 @@ public class TerrainChunk : MonoBehaviour
         var generator = GetComponentInParent<ProceduralTerrainGenerator>();
         if (generator == null)
         {
-            generator = Utilities.FindFirstObjectByTypeCompat<ProceduralTerrainGenerator>();
+            generator = SceneFind.First<ProceduralTerrainGenerator>();
         }
 
         if (generator == null)
@@ -628,16 +637,7 @@ public class TerrainChunk : MonoBehaviour
             return;
         }
 
-        // Apply mesh
-        mesh.Clear();
-        mesh.SetVertices(vertices);
-        mesh.SetTriangles(indices, 0, true);
-        mesh.SetNormals(normals);
-        mesh.RecalculateBounds();
-        mf.sharedMesh = mesh;
-        overlayMF.sharedMesh = mesh;
-
-        mc.sharedMesh = mesh;
-        mc.enabled = true;
+        // Apply mesh (shared method)
+        ApplyMeshData();
     }
 }

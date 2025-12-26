@@ -88,7 +88,7 @@ public class ConstructionSystem : MonoBehaviour
     private void ResolveTerrainReference()
     {
         if (terrain == null)
-            terrain = Utilities.FindFirstObjectByTypeCompat<ProceduralTerrainGenerator>();
+            terrain = SceneFind.First<ProceduralTerrainGenerator>();
 
         if (terrain != null)
             cfg = terrain.config;

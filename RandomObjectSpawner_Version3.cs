@@ -86,7 +86,7 @@ public class RandomObjectSpawner : MonoBehaviour
     private void Awake()
     {
         if (generator == null)
-            generator = Utilities.FindFirstObjectByTypeCompat<ProceduralTerrainGenerator>();
+            generator = SceneFind.First<ProceduralTerrainGenerator>();
     }
 
     private void OnEnable()
@@ -292,7 +292,7 @@ public class RandomObjectSpawner : MonoBehaviour
                                 }
                             }
 
-                            // Attach notifier if enabled
+                            // Attach notifier if enabled (notifier will handle notification on Start)
                             if (attachTerrainNotifier)
                             {
                                 var notifier = instance.GetComponent<ConstructionTerrainNotifier>();
@@ -301,14 +301,7 @@ public class RandomObjectSpawner : MonoBehaviour
                                     notifier = instance.AddComponent<ConstructionTerrainNotifier>();
                                 }
                                 notifier.terrain = generator;
-                                notifier.notifyOnStart = true; // Will notify after Start()
-                                
-                                // Also trigger immediate notification for newly spawned object
-                                Bounds instanceBounds = ComputeInstanceBounds(instance);
-                                if (instanceBounds.size.sqrMagnitude > 0.001f)
-                                {
-                                    generator.NotifyConstructionChanged(instanceBounds);
-                                }
+                                notifier.notifyOnStart = true; // Will notify after Start(), avoiding redundant computation
                             }
                         }
 
@@ -415,39 +408,5 @@ public class RandomObjectSpawner : MonoBehaviour
                 return i;
         }
         return -1;
-    }
-
-    // Helper: compute world-space bounds from instance colliders or renderers
-    private Bounds ComputeInstanceBounds(GameObject instance)
-    {
-        if (instance == null)
-            return new Bounds(Vector3.zero, Vector3.zero);
-
-        // Try colliders first
-        Collider[] colliders = instance.GetComponentsInChildren<Collider>();
-        if (colliders.Length > 0)
-        {
-            Bounds combined = colliders[0].bounds;
-            for (int i = 1; i < colliders.Length; i++)
-            {
-                combined.Encapsulate(colliders[i].bounds);
-            }
-            return combined;
-        }
-
-        // Fallback to renderers
-        Renderer[] renderers = instance.GetComponentsInChildren<Renderer>();
-        if (renderers.Length > 0)
-        {
-            Bounds combined = renderers[0].bounds;
-            for (int i = 1; i < renderers.Length; i++)
-            {
-                combined.Encapsulate(renderers[i].bounds);
-            }
-            return combined;
-        }
-
-        // Default to transform position with small size
-        return new Bounds(instance.transform.position, Vector3.one);
     }
 }

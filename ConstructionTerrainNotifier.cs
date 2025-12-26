@@ -36,7 +36,7 @@ public class ConstructionTerrainNotifier : MonoBehaviour
         // Auto-find terrain generator if not assigned
         if (terrain == null)
         {
-            terrain = Utilities.FindFirstObjectByTypeCompat<ProceduralTerrainGenerator>();
+            terrain = SceneFind.First<ProceduralTerrainGenerator>();
             if (terrain == null && verbose)
             {
                 Debug.LogWarning($"[ConstructionTerrainNotifier] No ProceduralTerrainGenerator found in scene for {gameObject.name}");

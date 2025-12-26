@@ -608,7 +608,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
 
     /// <summary>
     /// Attempt to carve construction objects into a chunk after generation.
-    /// Uses reflection to call ApplyConstructionCarving on the chunk if it exists.
+    /// Calls ApplyConstructionCarving on the chunk to re-sample with carving applied.
     /// </summary>
     private void AttemptCarveChunk(TerrainChunk chunk)
     {
@@ -617,25 +617,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
         Collider[] nearbyColliders = CollectNearbyConstructionColliders(chunk);
         if (nearbyColliders.Length == 0) return;
 
-        // Use reflection to call ApplyConstructionCarving if it exists
-        var method = chunk.GetType().GetMethod("ApplyConstructionCarving",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-
-        if (method != null)
-        {
-            try
-            {
-                method.Invoke(chunk, new object[] { nearbyColliders });
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"[ProceduralTerrainGenerator] Failed to invoke ApplyConstructionCarving on chunk: {e.Message}");
-            }
-        }
-        else
-        {
-            // Fallback: try SendMessage
-            chunk.SendMessage("ApplyConstructionCarving", nearbyColliders, SendMessageOptions.DontRequireReceiver);
-        }
+        // Call ApplyConstructionCarving directly (no reflection needed)
+        chunk.ApplyConstructionCarving(nearbyColliders);
     }
 }
