@@ -88,7 +88,7 @@ public class ConstructionSystem : MonoBehaviour
     private void ResolveTerrainReference()
     {
         if (terrain == null)
-            terrain = Object.FindFirstObjectByType<ProceduralTerrainGenerator>();
+            terrain = Utilities.FindFirstObjectByTypeCompat<ProceduralTerrainGenerator>();
 
         if (terrain != null)
             cfg = terrain.config;
@@ -226,6 +226,25 @@ public class ConstructionSystem : MonoBehaviour
             // Record this instance as a placed object with its per-instance snap size
             placedRoots.Add(obj);
             placedSnapSizeXYZ[obj] = currentSize;
+
+            // Construction carving integration: attach ConstructionTerrainNotifier
+            if (obj != null && terrain != null)
+            {
+                var notifier = obj.GetComponent<ConstructionTerrainNotifier>();
+                if (notifier == null)
+                {
+                    notifier = obj.AddComponent<ConstructionTerrainNotifier>();
+                }
+                notifier.terrain = terrain;
+                notifier.notifyOnStart = false; // Don't double-notify
+                
+                // Immediately notify terrain of the new construction
+                Bounds objBounds = ComputePlacedObjectBounds(obj);
+                if (objBounds.size.sqrMagnitude > 0.001f)
+                {
+                    terrain.NotifyConstructionChanged(objBounds);
+                }
+            }
 
             // notify listeners (e.g., to consume inventory item)
             onPlaced?.Invoke(obj);
@@ -385,6 +404,40 @@ public class ConstructionSystem : MonoBehaviour
         if (mat == null) return;
         foreach (var renderer in root.GetComponentsInChildren<Renderer>())
             renderer.material = mat;
+    }
+
+    // Helper: compute world-space bounds from placed object colliders or renderers
+    private Bounds ComputePlacedObjectBounds(GameObject obj)
+    {
+        if (obj == null)
+            return new Bounds(Vector3.zero, Vector3.zero);
+
+        // Try colliders first
+        Collider[] colliders = obj.GetComponentsInChildren<Collider>();
+        if (colliders.Length > 0)
+        {
+            Bounds combined = colliders[0].bounds;
+            for (int i = 1; i < colliders.Length; i++)
+            {
+                combined.Encapsulate(colliders[i].bounds);
+            }
+            return combined;
+        }
+
+        // Fallback to renderers
+        Renderer[] renderers = obj.GetComponentsInChildren<Renderer>();
+        if (renderers.Length > 0)
+        {
+            Bounds combined = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+            {
+                combined.Encapsulate(renderers[i].bounds);
+            }
+            return combined;
+        }
+
+        // Default to transform position with current cell size
+        return new Bounds(obj.transform.position, GetCurrentPrefabCellSizeXYZ());
     }
 
 #if UNITY_EDITOR

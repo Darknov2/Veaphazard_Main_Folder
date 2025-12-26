@@ -45,7 +45,7 @@ public class DensitySampler
         caveSystem.SetSurfaceSampler(Fractal2D, cfg.surfaceNoiseAmplitude, cfg.surfaceBaseHeight);
         islands.SetSurfaceSampler(Fractal2D, cfg.surfaceNoiseAmplitude, cfg.surfaceBaseHeight);
 
-        modificationManager = Object.FindFirstObjectByType<TerrainModificationManager>();
+        modificationManager = Utilities.FindFirstObjectByTypeCompat<TerrainModificationManager>();
     }
 
     public void ExtendCavesToY(float worldMinY) => caveSystem.ExtendCoverageTo(worldMinY);
