@@ -460,4 +460,178 @@ public class TerrainChunk : MonoBehaviour
 
         overlayFadeRoutine = null;
     }
+
+    /// <summary>
+    /// Apply construction carving by resampling densities around nearby construction colliders
+    /// and rebuilding the mesh.
+    /// </summary>
+    public void ApplyConstructionCarving(Collider[] nearbyColliders)
+    {
+        if (cfg == null || sampler == null || nearbyColliders == null || nearbyColliders.Length == 0)
+        {
+            return;
+        }
+
+        // Find the ProceduralTerrainGenerator to access SampleDensityWithCarving
+        ProceduralTerrainGenerator generator = null;
+        if (transform.parent != null)
+        {
+            generator = transform.parent.GetComponent<ProceduralTerrainGenerator>();
+        }
+
+        if (generator == null)
+        {
+            generator = SceneFind.First<ProceduralTerrainGenerator>();
+        }
+
+        if (generator == null)
+        {
+            Debug.LogWarning("TerrainChunk.ApplyConstructionCarving: Cannot find ProceduralTerrainGenerator.");
+            return;
+        }
+
+        // Resample densities with carving
+        int sizeXZ = cfg.chunkSizeXZ;
+        int sizeY = cfg.chunkSizeY;
+
+        nx = sizeXZ + 1;
+        ny = sizeY + 1;
+        nz = sizeXZ + 1;
+        int needed = nx * ny * nz;
+        if (density == null || density.Length != needed) density = new float[needed];
+
+        Vector3 basePos = transform.localPosition;
+
+        // Resample using carving-aware density function
+        for (int y = 0; y <= sizeY; y++)
+        {
+            float py = basePos.y + y * scale;
+            for (int z = 0; z <= sizeXZ; z++)
+            {
+                float pz = basePos.z + z * scale;
+                int yzBase = ((y * nz) + z) * nx;
+                for (int x = 0; x <= sizeXZ; x++)
+                {
+                    float px = basePos.x + x * scale;
+                    Vector3 worldPos = new Vector3(px, py, pz);
+                    density[yzBase + x] = generator.SampleDensityWithCarving(worldPos, nearbyColliders);
+                }
+            }
+        }
+
+        // Check if chunk is now entirely empty
+        if (enableEmptyChunkSkip && IsHomogeneousFull())
+        {
+            ClearMeshAndDisableCollider();
+            return;
+        }
+
+        // Rebuild mesh using marching cubes (same logic as Generate())
+        vertices.Clear();
+        normals.Clear();
+        indices.Clear();
+
+        for (int y = 0; y < sizeY; y++)
+        {
+            int y0 = y, y1 = y + 1;
+            for (int z = 0; z < sizeXZ; z++)
+            {
+                int z0 = z, z1 = z + 1;
+                for (int x = 0; x < sizeXZ; x++)
+                {
+                    int x0 = x, x1 = x + 1;
+
+                    cube[0] = AdjustNearIso(density[Idx(x0, y0, z0)], GlobalVX(x0), GlobalVY(y0), GlobalVZ(z0));
+                    cube[1] = AdjustNearIso(density[Idx(x1, y0, z0)], GlobalVX(x1), GlobalVY(y0), GlobalVZ(z0));
+                    cube[2] = AdjustNearIso(density[Idx(x1, y0, z1)], GlobalVX(x1), GlobalVY(y0), GlobalVZ(z1));
+                    cube[3] = AdjustNearIso(density[Idx(x0, y0, z1)], GlobalVX(x0), GlobalVY(y0), GlobalVZ(z1));
+                    cube[4] = AdjustNearIso(density[Idx(x0, y1, z0)], GlobalVX(x0), GlobalVY(y1), GlobalVZ(z0));
+                    cube[5] = AdjustNearIso(density[Idx(x1, y1, z0)], GlobalVX(x1), GlobalVY(y1), GlobalVZ(z0));
+                    cube[6] = AdjustNearIso(density[Idx(x1, y1, z1)], GlobalVX(x1), GlobalVY(y1), GlobalVZ(z1));
+                    cube[7] = AdjustNearIso(density[Idx(x0, y1, z1)], GlobalVX(x0), GlobalVY(y1), GlobalVZ(z1));
+
+                    bool anyAbove = false, anyBelowEq = false;
+                    for (int i = 0; i < 8; i++)
+                    {
+                        if (cube[i] > iso) anyAbove = true; else anyBelowEq = true;
+                        if (anyAbove && anyBelowEq) break;
+                    }
+                    if (!(anyAbove && anyBelowEq)) continue;
+
+                    float fx0 = x0 * scale, fx1 = x1 * scale;
+                    float fy0 = y0 * scale, fy1 = y1 * scale;
+                    float fz0 = z0 * scale, fz1 = z1 * scale;
+
+                    p[0] = new Vector3(fx0, fy0, fz0);
+                    p[1] = new Vector3(fx1, fy0, fz0);
+                    p[2] = new Vector3(fx1, fy0, fz1);
+                    p[3] = new Vector3(fx0, fy0, fz1);
+                    p[4] = new Vector3(fx0, fy1, fz0);
+                    p[5] = new Vector3(fx1, fy1, fz0);
+                    p[6] = new Vector3(fx1, fy1, fz1);
+                    p[7] = new Vector3(fx0, fy1, fz1);
+
+                    int cubeIndex = 0;
+                    if (cube[0] > iso) cubeIndex |= 1;
+                    if (cube[1] > iso) cubeIndex |= 2;
+                    if (cube[2] > iso) cubeIndex |= 4;
+                    if (cube[3] > iso) cubeIndex |= 8;
+                    if (cube[4] > iso) cubeIndex |= 16;
+                    if (cube[5] > iso) cubeIndex |= 32;
+                    if (cube[6] > iso) cubeIndex |= 64;
+                    if (cube[7] > iso) cubeIndex |= 128;
+
+                    int edgeFlags = MarchingCubesTables.EdgeTable[cubeIndex];
+                    if (edgeFlags == 0) continue;
+
+                    for (int e = 0; e < 12; e++)
+                    {
+                        if ((edgeFlags & (1 << e)) != 0)
+                        {
+                            int a = EdgeCorners[e, 0];
+                            int b = EdgeCorners[e, 1];
+                            edgeVertex[e] = MarchingCubesTables.VertexInterp(iso, p[a], p[b], cube[a], cube[b]);
+                        }
+                    }
+
+                    for (int t = 0; t < 16; t += 3)
+                    {
+                        int a0 = MarchingCubesTables.TriTable[cubeIndex, t];
+                        if (a0 == -1) break;
+                        int a1 = MarchingCubesTables.TriTable[cubeIndex, t + 1];
+                        int a2 = MarchingCubesTables.TriTable[cubeIndex, t + 2];
+
+                        Vector3 v0 = edgeVertex[a0];
+                        Vector3 v1 = edgeVertex[a1];
+                        Vector3 v2 = edgeVertex[a2];
+
+                        Vector3 faceN = Vector3.Cross(v1 - v0, v2 - v0).normalized;
+
+                        int baseIndex = vertices.Count;
+                        vertices.Add(v0); vertices.Add(v1); vertices.Add(v2);
+                        normals.Add(faceN); normals.Add(faceN); normals.Add(faceN);
+                        indices.Add(baseIndex); indices.Add(baseIndex + 1); indices.Add(baseIndex + 2);
+                    }
+                }
+            }
+        }
+
+        if (indices.Count == 0)
+        {
+            ClearMeshAndDisableCollider();
+            return;
+        }
+
+        // Apply mesh
+        mesh.Clear();
+        mesh.SetVertices(vertices);
+        mesh.SetTriangles(indices, 0, true);
+        mesh.SetNormals(normals);
+        mesh.RecalculateBounds();
+        mf.sharedMesh = mesh;
+        overlayMF.sharedMesh = mesh;
+
+        mc.sharedMesh = mesh;
+        mc.enabled = true;
+    }
 }
