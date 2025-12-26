@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System;
 using System.Linq;
+using System.Reflection;
 using Unity.AI.Navigation;
 using UnityEngine.AI;
 
@@ -79,6 +80,9 @@ public class ProceduralTerrainGenerator : MonoBehaviour
 
     // Cached Terrain layer index
     private int terrainLayer = -1;
+
+    // Cached reflection MethodInfo for chunk carving (performance optimization)
+    private static readonly Dictionary<Type, MethodInfo> cachedCarvingMethods = new Dictionary<Type, MethodInfo>();
 
     private void Awake()
     {
@@ -560,7 +564,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
     /// </summary>
     public Collider[] CollectNearbyConstructionColliders(Bounds chunkBounds, float padding)
     {
-        if (constructionLayerMask == 0) return new Collider[0];
+        if (constructionLayerMask == 0) return System.Array.Empty<Collider>();
 
         Bounds expandedBounds = chunkBounds;
         expandedBounds.Expand(padding * 2f);
@@ -630,58 +634,66 @@ public class ProceduralTerrainGenerator : MonoBehaviour
         Collider[] nearbyColliders = CollectNearbyConstructionColliders(chunkBounds, colliderBlendDistance);
         if (nearbyColliders.Length == 0) return;
 
-        // Try to invoke carving methods on the chunk using reflection
-        System.Type chunkType = chunk.GetType();
+        // Try to invoke carving methods on the chunk using cached reflection
+        Type chunkType = chunk.GetType();
 
-        // Method 1: ApplyConstructionCarving(Collider[] colliders)
-        var method1 = chunkType.GetMethod("ApplyConstructionCarving", 
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-        if (method1 != null)
+        // Check if we have a cached method for this chunk type
+        if (!cachedCarvingMethods.TryGetValue(chunkType, out MethodInfo cachedMethod))
+        {
+            // Try to find carving methods in priority order and cache the first one found
+            cachedMethod = chunkType.GetMethod("ApplyConstructionCarving",
+                BindingFlags.Public | BindingFlags.Instance,
+                null,
+                new Type[] { typeof(Collider[]) },
+                null);
+
+            if (cachedMethod == null)
+            {
+                cachedMethod = chunkType.GetMethod("GenerateWithCarving",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    null,
+                    new Type[] { typeof(Collider[]), typeof(ProceduralTerrainGenerator) },
+                    null);
+            }
+
+            if (cachedMethod == null)
+            {
+                cachedMethod = chunkType.GetMethod("ApplyCarving",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    null,
+                    new Type[] { typeof(Collider[]) },
+                    null);
+            }
+
+            cachedCarvingMethods[chunkType] = cachedMethod; // Cache even if null to avoid repeated lookups
+        }
+
+        // Invoke the cached method if found
+        if (cachedMethod != null)
         {
             try
             {
-                method1.Invoke(chunk, new object[] { nearbyColliders });
+                // Determine parameters based on method signature
+                object[] parameters;
+                if (cachedMethod.Name == "GenerateWithCarving")
+                {
+                    parameters = new object[] { nearbyColliders, this };
+                }
+                else
+                {
+                    parameters = new object[] { nearbyColliders };
+                }
+
+                cachedMethod.Invoke(chunk, parameters);
                 return;
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
-                Debug.LogWarning($"[ProceduralTerrainGenerator] Failed to invoke ApplyConstructionCarving: {ex.Message}");
+                Debug.LogWarning($"[ProceduralTerrainGenerator] Failed to invoke {cachedMethod.Name}: {ex.Message}");
             }
         }
 
-        // Method 2: GenerateWithCarving(Collider[] colliders, ProceduralTerrainGenerator generator)
-        var method2 = chunkType.GetMethod("GenerateWithCarving",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-        if (method2 != null)
-        {
-            try
-            {
-                method2.Invoke(chunk, new object[] { nearbyColliders, this });
-                return;
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogWarning($"[ProceduralTerrainGenerator] Failed to invoke GenerateWithCarving: {ex.Message}");
-            }
-        }
-
-        // Method 3: ApplyCarving(Collider[] colliders)
-        var method3 = chunkType.GetMethod("ApplyCarving",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-        if (method3 != null)
-        {
-            try
-            {
-                method3.Invoke(chunk, new object[] { nearbyColliders });
-                return;
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogWarning($"[ProceduralTerrainGenerator] Failed to invoke ApplyCarving: {ex.Message}");
-            }
-        }
-
-        // Fallback: SendMessage
+        // Fallback: SendMessage (only if no cached method found)
         chunk.SendMessage("ApplyConstructionCarving", nearbyColliders, SendMessageOptions.DontRequireReceiver);
     }
 }
