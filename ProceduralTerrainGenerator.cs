@@ -586,7 +586,7 @@ public class ProceduralTerrainGenerator : MonoBehaviour
             count = Physics.OverlapBoxNonAlloc(center, halfExtents, colliderBuffer, Quaternion.identity, constructionLayerMask);
         }
 
-        // Return only the filled portion
+        // Return only the filled portion (small allocation, but buffer reuse is the main optimization)
         Collider[] result = new Collider[count];
         System.Array.Copy(colliderBuffer, result, count);
         return result;

@@ -301,7 +301,7 @@ public class RandomObjectSpawner : MonoBehaviour
                                     notifier = instance.AddComponent<ConstructionTerrainNotifier>();
                                 }
                                 notifier.terrain = generator;
-                                notifier.notifyOnStart = true; // Will notify after Start(), avoiding redundant computation
+                                notifier.notifyOnStart = true; // Notifier will trigger notification on Start()
                             }
                         }
 

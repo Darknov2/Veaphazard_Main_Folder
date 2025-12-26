@@ -39,6 +39,9 @@ public class TerrainChunk : MonoBehaviour
     private Material overlayMaterialInstance;
     private Coroutine overlayFadeRoutine;
 
+    // Cached generator reference for carving
+    private ProceduralTerrainGenerator cachedGenerator;
+
     // marching cubes working data
     private float[] density;
     private int nx, ny, nz;
@@ -501,14 +504,17 @@ public class TerrainChunk : MonoBehaviour
             return;
         }
 
-        // Find the generator to access SampleDensityWithCarving
-        var generator = GetComponentInParent<ProceduralTerrainGenerator>();
-        if (generator == null)
+        // Find the generator to access SampleDensityWithCarving (cache for efficiency)
+        if (cachedGenerator == null)
         {
-            generator = SceneFind.First<ProceduralTerrainGenerator>();
+            cachedGenerator = GetComponentInParent<ProceduralTerrainGenerator>();
+            if (cachedGenerator == null)
+            {
+                cachedGenerator = SceneFind.First<ProceduralTerrainGenerator>();
+            }
         }
 
-        if (generator == null)
+        if (cachedGenerator == null)
         {
             Debug.LogWarning($"[TerrainChunk] ApplyConstructionCarving: Cannot find ProceduralTerrainGenerator");
             Generate(); // Fallback to normal generation
@@ -539,7 +545,7 @@ public class TerrainChunk : MonoBehaviour
                 {
                     float px = basePos.x + x * scale;
                     Vector3 worldPos = new Vector3(px, py, pz);
-                    density[yzBase + x] = generator.SampleDensityWithCarving(worldPos, gates, nearbyColliders);
+                    density[yzBase + x] = cachedGenerator.SampleDensityWithCarving(worldPos, gates, nearbyColliders);
                 }
             }
         }
