@@ -72,6 +72,12 @@ public class RandomObjectSpawner : MonoBehaviour
     public string objectSurfaceName = "SpawnedObjectsNavMeshSurface";
     public bool createAndBakeObjectSurface = true;
 
+    [Header("Construction Terrain Integration")]
+    [Tooltip("If true, set spawned objects to the construction layer from generator.constructionLayerMask.")]
+    public bool enforceConstructionLayer = true;
+    [Tooltip("If true, automatically add ConstructionTerrainNotifier to spawned objects.")]
+    public bool autoAddConstructionNotifier = true;
+
     // runtime bounds / grid indices
     private bool hasBounds;
     private Vector3 minBound, maxBound;
@@ -80,7 +86,7 @@ public class RandomObjectSpawner : MonoBehaviour
     private void Awake()
     {
         if (generator == null)
-            generator = FindObjectOfType<ProceduralTerrainGenerator>();
+            generator = SceneFind.First<ProceduralTerrainGenerator>();
     }
 
     private void OnEnable()
@@ -267,10 +273,42 @@ public class RandomObjectSpawner : MonoBehaviour
                             rot = Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
                         }
 
+                        GameObject instance;
                         if (parent != null)
-                            Instantiate(entry.prefab, pos, rot, parent);
+                            instance = Instantiate(entry.prefab, pos, rot, parent);
                         else
-                            Instantiate(entry.prefab, pos, rot);
+                            instance = Instantiate(entry.prefab, pos, rot);
+
+                        // Apply construction layer if enabled
+                        if (enforceConstructionLayer && generator != null && generator.constructionLayerMask != 0)
+                        {
+                            int constructionLayer = GetFirstSetBit(generator.constructionLayerMask);
+                            if (constructionLayer >= 0)
+                            {
+                                SetLayerRecursively(instance, constructionLayer);
+                            }
+                        }
+
+                        // Add ConstructionTerrainNotifier if enabled
+                        if (autoAddConstructionNotifier && generator != null)
+                        {
+                            var notifier = instance.GetComponent<ConstructionTerrainNotifier>();
+                            if (notifier == null)
+                            {
+                                notifier = instance.AddComponent<ConstructionTerrainNotifier>();
+                            }
+                            notifier.terrain = generator;
+                        }
+
+                        // Notify generator of the spawned instance's bounds
+                        if (generator != null)
+                        {
+                            Bounds bounds = ComputeBounds(instance);
+                            if (bounds.size.sqrMagnitude > 0.001f)
+                            {
+                                generator.NotifyConstructionChanged(bounds);
+                            }
+                        }
 
                         placed = true;
                     }
@@ -332,6 +370,55 @@ public class RandomObjectSpawner : MonoBehaviour
         gridXMax = Mathf.FloorToInt((maxBound.x - gridOriginXZ.x) / cell);
         gridZMin = Mathf.CeilToInt((minBound.z - gridOriginXZ.y) / cell);
         gridZMax = Mathf.FloorToInt((maxBound.z - gridOriginXZ.y) / cell);
+    }
+
+    /// <summary>
+    /// Get the first set bit in a layer mask to determine the construction layer.
+    /// </summary>
+    private int GetFirstSetBit(LayerMask mask)
+    {
+        int value = mask.value;
+        for (int i = 0; i < 32; i++)
+        {
+            if ((value & (1 << i)) != 0)
+                return i;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// Compute bounds from colliders (preferred) or renderers (fallback).
+    /// </summary>
+    private Bounds ComputeBounds(GameObject obj)
+    {
+        if (obj == null) return new Bounds(Vector3.zero, Vector3.zero);
+
+        // Try colliders first
+        Collider[] colliders = obj.GetComponentsInChildren<Collider>();
+        if (colliders.Length > 0)
+        {
+            Bounds bounds = colliders[0].bounds;
+            for (int i = 1; i < colliders.Length; i++)
+            {
+                bounds.Encapsulate(colliders[i].bounds);
+            }
+            return bounds;
+        }
+
+        // Fallback to renderers
+        Renderer[] renderers = obj.GetComponentsInChildren<Renderer>();
+        if (renderers.Length > 0)
+        {
+            Bounds bounds = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+            {
+                bounds.Encapsulate(renderers[i].bounds);
+            }
+            return bounds;
+        }
+
+        // No colliders or renderers
+        return new Bounds(obj.transform.position, Vector3.one * 0.5f);
     }
 
 #if UNITY_EDITOR
