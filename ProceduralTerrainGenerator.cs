@@ -590,23 +590,28 @@ public class ProceduralTerrainGenerator : MonoBehaviour
         if (nearbyColliders == null || nearbyColliders.Length == 0)
             return baseDensity;
 
+        // Pre-compute squared distances for performance
+        float blendDistSqr = colliderBlendDistance * colliderBlendDistance;
+        float minDistThresholdSqr = 0.0001f; // 0.01 * 0.01
+
         // Check if point is inside any construction collider
         foreach (var col in nearbyColliders)
         {
             if (col == null) continue;
 
             Vector3 closestPoint = col.ClosestPoint(worldPos);
-            float dist = Vector3.Distance(worldPos, closestPoint);
+            float distSqr = (worldPos - closestPoint).sqrMagnitude;
 
             // If point is inside or very close to collider, carve it out (set density to negative/empty)
-            if (dist < 0.01f)
+            if (distSqr < minDistThresholdSqr)
             {
                 return -1f; // Force empty
             }
             
             // Blend zone for smooth carving
-            if (dist < colliderBlendDistance)
+            if (distSqr < blendDistSqr)
             {
+                float dist = Mathf.Sqrt(distSqr);
                 float t = dist / colliderBlendDistance;
                 baseDensity = Mathf.Lerp(-1f, baseDensity, t);
             }
